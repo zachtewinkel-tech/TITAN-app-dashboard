@@ -1235,20 +1235,25 @@ export default function TitanDashboard() {
       const technicalQuery = signalSymbols
         ? `&includeTechnical=1&technicalSymbols=${encodeURIComponent(signalSymbols)}`
         : "";
-      const response = await fetch(
-        `/api/market?symbols=${encodeURIComponent(quoteSymbols)}${optionQuery}${signalQuery}${technicalQuery}`,
-        {
-          cache: "no-store",
-          headers: finnhubApiKey.trim()
-            ? { "x-finnhub-key": finnhubApiKey.trim() }
-            : undefined,
-        },
-      );
-      const data = (await response.json()) as MarketApiResponse & {
-        error?: string;
-      };
-      if (!response.ok) {
-        throw new Error(data.error || "Live market data request failed.");
+      const endpoint = `/api/titan?symbols=${encodeURIComponent(quoteSymbols)}${optionQuery}${signalQuery}${technicalQuery}`;
+      const response = await fetch(endpoint, {
+        cache: "no-store",
+        headers: finnhubApiKey.trim()
+          ? { "x-finnhub-key": finnhubApiKey.trim() }
+          : undefined,
+      });
+      const raw = await response.text();
+      let data: (MarketApiResponse & { error?: string }) | null = null;
+      try {
+        data = raw ? (JSON.parse(raw) as MarketApiResponse & { error?: string }) : null;
+      } catch {
+        const preview = raw.slice(0, 180).replace(/\s+/g, " ");
+        throw new Error(
+          `API returned non-JSON from ${endpoint}. Status ${response.status}. ${preview || "Empty response."}`
+        );
+      }
+      if (!response.ok || !data) {
+        throw new Error(data?.error || `Live market data request failed with status ${response.status}.`);
       }
       setLiveQuotes(data.quotes ?? {});
       setSignalData({});
@@ -1528,7 +1533,7 @@ export default function TitanDashboard() {
         if (top)
           items.push({
             action: "COVER",
-            title: `${h.ticker} covered-call candidate`,
+            title: `${h.ticker} optional-call candidate`,
             detail: `Finnhub chain candidate: ${top.expiration} $${top.strike.toFixed(2)} call, ${top.dte} DTE, delta ${top.delta === null ? "n/a" : top.delta.toFixed(2)}, mid ${top.mid === null ? "n/a" : formatCurrency(top.mid)}.`,
           });
       });
@@ -1548,7 +1553,7 @@ export default function TitanDashboard() {
             action: "HOLD" as ActionState,
             title: "No hard rule triggered",
             detail:
-              "Maintain current portfolio posture; continue monitoring regime, rankings, tax lots, and covered-call status.",
+              "Maintain current portfolio posture; continue monitoring regime, rankings, tax lots, and optional overlay status.",
           },
         ];
   }, [holdings.length, optionCandidates, snapshot]);
@@ -1827,7 +1832,7 @@ export default function TitanDashboard() {
                 TITAN Income Strategy Dashboard
               </h2>
               <p className="mt-5 max-w-4xl text-base leading-8 text-[#0D1B2A]">
-                Multi-asset income dashboard for the TITAN strategy using PHR regime classification, dynamic margin, defensive rotation, income-sleeve monitoring, candidate bench management, and optional covered-call overlay management.
+                Multi-asset income dashboard for the TITAN strategy using PHR regime classification, dynamic margin, defensive rotation, income-sleeve monitoring, candidate bench management, and optional call-overlay management.
               </p>
             </div>
             <div className="flex items-center justify-end">
@@ -2059,7 +2064,7 @@ export default function TitanDashboard() {
               <h3 className="text-xl font-black">Action Items</h3>
               <p className="mt-2 text-sm text-[#344054]">
                 Rule-engine output based on regime, leverage, holdings, signal
-                ranks, tax lots, and covered-call status.
+                ranks, tax lots, and optional overlay status.
               </p>
               <div className="mt-4 grid gap-3">
                 {actionItems.map((item, i) => (
@@ -2094,7 +2099,7 @@ export default function TitanDashboard() {
                     Holdings Ledger
                   </h3>
                   <p className="mt-2 text-sm text-[#344054]">
-                    Streamlined decision view. Editable inputs remain on the left; calculated outputs are locked: live price, buy zone, call zone, combined 0–100 score, and action state.
+                    Streamlined decision view. Editable inputs remain on the left; calculated outputs are locked: live price, buy zone, trim zone, combined 0–100 score, and action state.
                   </p>
                 </div>
                 <div className="flex gap-2">
@@ -2138,7 +2143,7 @@ export default function TitanDashboard() {
                           "Earnings",
                           "Price",
                           "Buy Zone",
-                          "Call Zone",
+                          "Trim Zone",
                           "Score",
                           "Weight",
                           "P&L",
@@ -2315,7 +2320,7 @@ export default function TitanDashboard() {
                               {zoneBox(
                                 displayTa.trimLow,
                                 displayTa.trimHigh,
-                                inTrimZone ? "COVER / TRIM" : "AUTO",
+                                inTrimZone ? "TRIM / REDUCE" : "AUTO",
                                 inTrimZone ? "warning" : "neutral",
                               )}
                             </td>
@@ -2372,7 +2377,7 @@ export default function TitanDashboard() {
                     Bench / Top Candidate Pool
                   </h3>
                   <p className="mt-2 text-sm text-[#344054]">
-                    Clean candidate view. Add or edit potential positions, then use the locked outputs — live price, buy zone, call zone, and combined TITAN Score — to prioritize adds and promotions.
+                    Clean candidate view. Add or edit potential positions, then use the locked outputs — live price, buy zone, trim zone, and combined TITAN Score — to prioritize adds and promotions.
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -2404,7 +2409,7 @@ export default function TitanDashboard() {
                         "Sector",
                         "Price",
                         "Buy Zone",
-                        "Call Zone",
+                        "Trim Zone",
                         "Score",
                         "Status",
                         "",
@@ -2540,7 +2545,7 @@ export default function TitanDashboard() {
                             {zoneBox(
                               displayTa.trimLow,
                               displayTa.trimHigh,
-                              inTrimZone ? "COVER / TRIM" : "AUTO",
+                              inTrimZone ? "TRIM / REDUCE" : "AUTO",
                               inTrimZone ? "warning" : "neutral",
                             )}
                           </td>
@@ -2611,7 +2616,7 @@ export default function TitanDashboard() {
                 {metricCard("Bench", "Top 20", "Candidate pool")}
               </div>
               <div className="mt-5 border border-[#E5D8A8] bg-[#F0EBD8] p-4 text-sm leading-6 text-[#344054]">
-                Current build: the main Bench and Holdings pages intentionally expose fewer fields. Refresh Live Data updates prices and technical inputs where available; manual income-risk inputs remain editable so the dashboard can roll them into one locked 0–100 TITAN Score plus Buy Zone and Call Zone outputs.
+                Current build: the main Bench and Holdings pages intentionally expose fewer fields. Refresh Live Data updates prices and technical inputs where available; manual income-risk inputs remain editable so the dashboard can roll them into one locked 0–100 TITAN Score plus Buy Zone and Trim Zone outputs.
               </div>
               <div className="mt-5 overflow-x-auto">
                 <table className="w-full min-w-[980px] border-collapse text-sm">
@@ -3144,7 +3149,7 @@ export default function TitanDashboard() {
                     Enter a Finnhub API key here for browser-managed live
                     quotes. The key is saved only in this browser's local
                     storage and is sent to this app's server-side{" "}
-                    <code>/api/market</code> route when refreshing quotes and
+                    <code>/api/titan</code> route when refreshing quotes and
                     once-daily option-chain candidates. You may still use{" "}
                     <code>FINNHUB_API_KEY</code> in <code>.env.local</code> or
                     Vercel environment variables as a fallback.

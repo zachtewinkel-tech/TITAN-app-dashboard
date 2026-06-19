@@ -187,13 +187,26 @@ async function fetchFinnhubJson<T>(path: string, token: string): Promise<T> {
     },
   );
 
-  if (!response.ok) {
+  const raw = await response.text();
+  let parsed: unknown = null;
+  try {
+    parsed = raw ? JSON.parse(raw) : null;
+  } catch {
+    const preview = raw.slice(0, 160).replace(/\s+/g, " ");
     throw new Error(
-      `Finnhub request failed: ${response.status} ${response.statusText}`,
+      `Finnhub returned non-JSON for ${path}: ${response.status} ${response.statusText}. ${preview}`,
     );
   }
 
-  return (await response.json()) as T;
+  if (!response.ok) {
+    const message =
+      parsed && typeof parsed === "object" && "error" in parsed
+        ? String((parsed as { error?: unknown }).error)
+        : `${response.status} ${response.statusText}`;
+    throw new Error(`Finnhub request failed for ${path}: ${message}`);
+  }
+
+  return parsed as T;
 }
 
 async function fetchQuote(symbol: string, token: string): Promise<LiveQuote> {
