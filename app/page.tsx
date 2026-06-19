@@ -19,6 +19,11 @@ type Sleeve = "Infrastructure" | "BDC / Private Credit" | "Option-Income" | "Cre
 type TaConfidence = "Manual" | "Low" | "Medium" | "High";
 type ActionState =
   | "HOLD"
+  | "REDUCE MARGIN"
+  | "DEFENSIVE ROTATE"
+  | "TACTICAL DEPLOY"
+  | "CUT REVIEW"
+  | "FULL REBALANCE"
   | "BUY"
   | "TRIM"
   | "SELL"
@@ -213,11 +218,11 @@ const TAB_LABELS: Record<Tab, string> = {
 };
 
 const STORAGE_KEYS = {
-  holdings: "titanIncomeHoldings.v1",
-  bench: "titanIncomeBench.v1",
-  calls: "titanIncomeCoveredCalls.v1",
-  settings: "titanIncomeSettings.v1",
-  liveSettings: "titanIncomeLiveSettings.v1",
+  holdings: "titanIncomeHoldings.v2",
+  bench: "titanIncomeBench.v2",
+  calls: "titanIncomeCoveredCalls.v2",
+  settings: "titanIncomeSettings.v2",
+  liveSettings: "titanIncomeLiveSettings.v2",
 };
 
 const DEFAULT_TA_FIELDS = {
@@ -234,365 +239,303 @@ const DEFAULT_TA_FIELDS = {
 const DEFAULT_BENCH: BenchCandidate[] = ([
   {
     rank: 1,
-    ticker: "AVGO",
-    name: "Broadcom",
-    sleeveFit: "Infrastructure",
-    sector: "Technology",
-    price: 265,
-    signalScore: 93,
-    upside: 0.23,
-    revisionScore: 94,
-    momentumScore: 88,
-    qualityScore: 90,
-    dispersion: 0.19,
-    notes:
-      "AI infrastructure / semis. Watch valuation and AI capex durability.",
+    ticker: "ARCC",
+    name: "Ares Capital",
+    sleeveFit: "BDC / Private Credit",
+    sector: "BDC / Private Credit",
+    price: 0,
+    signalScore: 89,
+    upside: 0.09,
+    revisionScore: 88,
+    momentumScore: 72,
+    qualityScore: 88,
+    dispersion: 0.10,
+    notes: "Target 8% core BDC position. IRA/Roth preferred; high current yield with scale and liquidity.",
   },
   {
     rank: 2,
-    ticker: "NVDA",
-    name: "NVIDIA",
-    sleeveFit: "Tactical",
-    sector: "Technology",
-    price: 160,
-    signalScore: 95,
-    upside: 0.24,
-    revisionScore: 96,
-    momentumScore: 92,
-    qualityScore: 89,
-    dispersion: 0.23,
-    notes: "Highest signal, but AI concentration and valuation-duration risk.",
+    ticker: "MPLX",
+    name: "MPLX LP",
+    sleeveFit: "Infrastructure",
+    sector: "Infrastructure / Midstream",
+    price: 0,
+    signalScore: 88,
+    upside: 0.08,
+    revisionScore: 88,
+    momentumScore: 76,
+    qualityScore: 86,
+    dispersion: 0.08,
+    notes: "Target 7% core MLP. Taxable only; K-1 / UBTI complexity in IRA.",
   },
   {
     rank: 3,
-    ticker: "VST",
-    name: "Vistra",
-    sleeveFit: "Tactical",
-    sector: "Utilities",
-    price: 185,
-    signalScore: 93,
-    upside: 0.22,
-    revisionScore: 92,
-    momentumScore: 94,
-    qualityScore: 78,
-    dispersion: 0.24,
-    notes: "Power / AI electricity demand. Tactical sleeve candidate.",
+    ticker: "EPD",
+    name: "Enterprise Products Partners",
+    sleeveFit: "Infrastructure",
+    sector: "Infrastructure / Midstream",
+    price: 0,
+    signalScore: 88,
+    upside: 0.07,
+    revisionScore: 90,
+    momentumScore: 72,
+    qualityScore: 90,
+    dispersion: 0.07,
+    notes: "Target 7% core MLP. Taxable only; conservative midstream ballast.",
   },
   {
     rank: 4,
-    ticker: "AXON",
-    name: "Axon Enterprise",
-    sleeveFit: "Infrastructure",
-    sector: "Industrials",
-    price: 670,
-    signalScore: 92,
-    upside: 0.22,
-    revisionScore: 91,
-    momentumScore: 90,
-    qualityScore: 85,
-    dispersion: 0.22,
-    notes: "Durable public safety platform. High multiple; monitor dispersion.",
+    ticker: "XYLD",
+    name: "Global X S&P 500 Covered Call ETF",
+    sleeveFit: "Option-Income",
+    sector: "Option-Income",
+    price: 0,
+    signalScore: 82,
+    upside: 0.09,
+    revisionScore: 78,
+    momentumScore: 60,
+    qualityScore: 82,
+    dispersion: 0.11,
+    notes: "Target 8% option-income sleeve. IRA/Roth preferred because distributions are often ordinary-income heavy.",
   },
   {
     rank: 5,
-    ticker: "ETN",
-    name: "Eaton",
-    sleeveFit: "Infrastructure",
-    sector: "Industrials",
-    price: 420,
-    signalScore: 91,
-    upside: 0.2,
-    revisionScore: 90,
-    momentumScore: 86,
-    qualityScore: 88,
-    dispersion: 0.18,
-    notes: "Electrification compounder. Core candidate.",
+    ticker: "DIVO",
+    name: "Amplify CWP Enhanced Dividend Income ETF",
+    sleeveFit: "Option-Income",
+    sector: "Option-Income",
+    price: 0,
+    signalScore: 84,
+    upside: 0.05,
+    revisionScore: 84,
+    momentumScore: 68,
+    qualityScore: 86,
+    dispersion: 0.08,
+    notes: "Target 7% option-income sleeve. Lower-beta premium harvest ballast.",
   },
   {
     rank: 6,
-    ticker: "ORCL",
-    name: "Oracle",
-    sleeveFit: "Tactical",
-    sector: "Technology",
-    price: 205,
-    signalScore: 91,
-    upside: 0.21,
+    ticker: "MAIN",
+    name: "Main Street Capital",
+    sleeveFit: "BDC / Private Credit",
+    sector: "BDC / Private Credit",
+    price: 0,
+    signalScore: 86,
+    upside: 0.06,
     revisionScore: 90,
-    momentumScore: 83,
-    qualityScore: 82,
-    dispersion: 0.21,
-    notes:
-      "AI/cloud infrastructure. Tactical until revisions prove durable.",
+    momentumScore: 70,
+    qualityScore: 92,
+    dispersion: 0.08,
+    notes: "Target 6% BDC. Quality BDC benchmark; valuation premium should be monitored.",
   },
   {
     rank: 7,
-    ticker: "GE",
-    name: "GE Aerospace",
-    sleeveFit: "Infrastructure",
-    sector: "Industrials",
-    price: 225,
-    signalScore: 88,
-    upside: 0.18,
-    revisionScore: 86,
-    momentumScore: 84,
-    qualityScore: 86,
-    dispersion: 0.2,
-    notes: "Aerospace quality growth. Core candidate.",
+    ticker: "PDI",
+    name: "PIMCO Dynamic Income Fund",
+    sleeveFit: "Credit / CEF",
+    sector: "Credit / CEF",
+    price: 0,
+    signalScore: 84,
+    upside: 0.13,
+    revisionScore: 72,
+    momentumScore: 66,
+    qualityScore: 78,
+    dispersion: 0.18,
+    notes: "Target 7% credit CEF. Monitor leverage, distribution coverage, and premium/discount z-score.",
   },
   {
     rank: 8,
-    ticker: "BSX",
-    name: "Boston Scientific",
+    ticker: "ET",
+    name: "Energy Transfer LP",
     sleeveFit: "Infrastructure",
-    sector: "Healthcare",
-    price: 93,
-    signalScore: 87,
-    upside: 0.17,
-    revisionScore: 85,
-    momentumScore: 78,
-    qualityScore: 89,
-    dispersion: 0.14,
-    notes: "Medtech growth; diversifies software/AI risk.",
+    sector: "Infrastructure / Midstream",
+    price: 0,
+    signalScore: 84,
+    upside: 0.08,
+    revisionScore: 82,
+    momentumScore: 74,
+    qualityScore: 80,
+    dispersion: 0.12,
+    notes: "Target 5% core MLP. Taxable only; higher governance/leverage watch than EPD.",
   },
   {
     rank: 9,
-    ticker: "MSFT",
-    name: "Microsoft",
+    ticker: "UTG",
+    name: "Reaves Utility Income Fund",
     sleeveFit: "Infrastructure",
-    sector: "Technology",
-    price: 515,
-    signalScore: 86,
-    upside: 0.14,
-    revisionScore: 84,
-    momentumScore: 74,
-    qualityScore: 94,
-    dispersion: 0.12,
-    notes: "Core compounder. Balance AI upside with concentration risk.",
+    sector: "Infrastructure / Utilities CEF",
+    price: 0,
+    signalScore: 82,
+    upside: 0.08,
+    revisionScore: 82,
+    momentumScore: 62,
+    qualityScore: 84,
+    dispersion: 0.13,
+    notes: "Target 5% infrastructure/utility CEF. Taxable preferred if ROC profile is favorable; monitor discount z-score.",
   },
   {
     rank: 10,
-    ticker: "NOW",
-    name: "ServiceNow",
-    sleeveFit: "Tactical",
-    sector: "Technology",
-    price: 840,
-    signalScore: 86,
-    upside: 0.21,
-    revisionScore: 79,
-    momentumScore: 60,
-    qualityScore: 88,
-    dispersion: 0.26,
-    notes: "Software value-trap screen required before inclusion.",
+    ticker: "HTGC",
+    name: "Hercules Capital",
+    sleeveFit: "BDC / Private Credit",
+    sector: "BDC / Private Credit",
+    price: 0,
+    signalScore: 84,
+    upside: 0.10,
+    revisionScore: 78,
+    momentumScore: 74,
+    qualityScore: 82,
+    dispersion: 0.13,
+    notes: "Target 5% BDC. Venture-credit exposure; stronger cycle sensitivity than ARCC/MAIN.",
   },
   {
     rank: 11,
-    ticker: "ISRG",
-    name: "Intuitive Surgical",
-    sleeveFit: "Infrastructure",
-    sector: "Healthcare",
-    price: 545,
-    signalScore: 85,
-    upside: 0.15,
-    revisionScore: 81,
-    momentumScore: 76,
-    qualityScore: 93,
-    dispersion: 0.16,
-    notes: "High-quality medtech compounder.",
+    ticker: "PTY",
+    name: "PIMCO Corporate & Income Opportunity Fund",
+    sleeveFit: "Credit / CEF",
+    sector: "Credit / CEF",
+    price: 0,
+    signalScore: 80,
+    upside: 0.10,
+    revisionScore: 70,
+    momentumScore: 66,
+    qualityScore: 78,
+    dispersion: 0.20,
+    notes: "Target 5% credit CEF. Strong sponsor but premium/discount discipline is critical.",
   },
   {
     rank: 12,
-    ticker: "AMZN",
-    name: "Amazon",
-    sleeveFit: "Infrastructure",
-    sector: "Consumer Discretionary",
-    price: 224,
-    signalScore: 85,
-    upside: 0.15,
-    revisionScore: 82,
-    momentumScore: 73,
-    qualityScore: 90,
+    ticker: "DSL",
+    name: "DoubleLine Income Solutions Fund",
+    sleeveFit: "Credit / CEF",
+    sector: "Credit / CEF",
+    price: 0,
+    signalScore: 79,
+    upside: 0.11,
+    revisionScore: 70,
+    momentumScore: 62,
+    qualityScore: 76,
     dispersion: 0.17,
-    notes: "Core platform / AWS / retail operating leverage.",
+    notes: "Target 5% credit CEF. Discount-capture candidate; monitor credit stress and distribution coverage.",
   },
   {
     rank: 13,
-    ticker: "LLY",
-    name: "Eli Lilly",
+    ticker: "WMB",
+    name: "Williams Companies",
     sleeveFit: "Infrastructure",
-    sector: "Healthcare",
-    price: 940,
-    signalScore: 84,
-    upside: 0.13,
+    sector: "Infrastructure / Midstream C-Corp",
+    price: 0,
+    signalScore: 82,
+    upside: 0.05,
     revisionScore: 84,
-    momentumScore: 75,
-    qualityScore: 91,
-    dispersion: 0.18,
-    notes: "Healthcare ballast; valuation discipline required.",
+    momentumScore: 76,
+    qualityScore: 86,
+    dispersion: 0.08,
+    notes: "Target 4% C-corp midstream. Either taxable or IRA; cleaner than MLPs.",
   },
   {
     rank: 14,
-    ticker: "GOOGL",
-    name: "Alphabet",
-    sleeveFit: "Infrastructure",
-    sector: "Communication Services",
-    price: 191,
-    signalScore: 84,
-    upside: 0.16,
-    revisionScore: 80,
-    momentumScore: 70,
-    qualityScore: 92,
-    dispersion: 0.15,
-    notes: "Core platform. AI disruption and search monetization watch item.",
+    ticker: "BGT",
+    name: "BlackRock Floating Rate Income Trust",
+    sleeveFit: "Credit / CEF",
+    sector: "Credit / CEF",
+    price: 0,
+    signalScore: 78,
+    upside: 0.09,
+    revisionScore: 72,
+    momentumScore: 64,
+    qualityScore: 78,
+    dispersion: 0.14,
+    notes: "Target 4% floating-rate CEF. Monitor rate regime, leverage cost, and loan-credit quality.",
   },
   {
     rank: 15,
-    ticker: "CAT",
-    name: "Caterpillar",
-    sleeveFit: "Tactical",
-    sector: "Industrials",
-    price: 400,
-    signalScore: 84,
-    upside: 0.15,
-    revisionScore: 74,
-    momentumScore: 78,
-    qualityScore: 84,
-    dispersion: 0.19,
-    notes: "Cyclical / infrastructure exposure. Tactical candidate.",
+    ticker: "CSWC",
+    name: "Capital Southwest",
+    sleeveFit: "BDC / Private Credit",
+    sector: "BDC / Private Credit",
+    price: 0,
+    signalScore: 80,
+    upside: 0.09,
+    revisionScore: 76,
+    momentumScore: 68,
+    qualityScore: 78,
+    dispersion: 0.14,
+    notes: "Target 3% BDC. Higher yield and smaller-cap BDC risk; IRA/Roth preferred.",
   },
   {
     rank: 16,
-    ticker: "V",
-    name: "Visa",
-    sleeveFit: "Infrastructure",
-    sector: "Financials",
-    price: 355,
-    signalScore: 81,
-    upside: 0.12,
-    revisionScore: 75,
-    momentumScore: 68,
-    qualityScore: 95,
-    dispersion: 0.11,
-    notes: "Financial rails compounder.",
+    ticker: "GBDC",
+    name: "Golub Capital BDC",
+    sleeveFit: "BDC / Private Credit",
+    sector: "BDC / Private Credit",
+    price: 0,
+    signalScore: 78,
+    upside: 0.10,
+    revisionScore: 74,
+    momentumScore: 62,
+    qualityScore: 78,
+    dispersion: 0.12,
+    notes: "Target 3% BDC. More conservative middle-market credit exposure; IRA/Roth preferred.",
   },
   {
     rank: 17,
-    ticker: "MA",
-    name: "Mastercard",
-    sleeveFit: "Infrastructure",
-    sector: "Financials",
-    price: 565,
-    signalScore: 82,
-    upside: 0.13,
-    revisionScore: 76,
-    momentumScore: 71,
-    qualityScore: 96,
-    dispersion: 0.1,
-    notes: "Financial rails compounder.",
+    ticker: "ECC",
+    name: "Eagle Point Credit Company",
+    sleeveFit: "Credit / CEF",
+    sector: "Credit / CEF",
+    price: 0,
+    signalScore: 70,
+    upside: 0.16,
+    revisionScore: 55,
+    momentumScore: 58,
+    qualityScore: 60,
+    dispersion: 0.28,
+    notes: "Target 3% high-risk CLO equity income. Small weight only; distribution-cut risk screen is essential.",
   },
   {
     rank: 18,
-    ticker: "SPGI",
-    name: "S&P Global",
-    sleeveFit: "Infrastructure",
-    sector: "Financials",
-    price: 520,
-    signalScore: 83,
-    upside: 0.14,
-    revisionScore: 78,
-    momentumScore: 72,
-    qualityScore: 94,
-    dispersion: 0.13,
-    notes: "Data / ratings compounder.",
+    ticker: "PCEF",
+    name: "Invesco CEF Income Composite ETF",
+    sleeveFit: "Credit / CEF",
+    sector: "Credit / CEF ETF",
+    price: 0,
+    signalScore: 76,
+    upside: 0.08,
+    revisionScore: 74,
+    momentumScore: 64,
+    qualityScore: 76,
+    dispersion: 0.12,
+    notes: "Target 3% core CEF ETF and tactical recovery proxy when H0/H1 mean reversion fires.",
   },
   {
     rank: 19,
-    ticker: "BRK.B",
-    name: "Berkshire Hathaway",
-    sleeveFit: "Infrastructure",
-    sector: "Financials",
-    price: 475,
-    signalScore: 78,
-    upside: 0.09,
-    revisionScore: 67,
-    momentumScore: 60,
-    qualityScore: 95,
-    dispersion: 0.08,
-    notes: "Quality ballast; lower signal upside.",
+    ticker: "AGG",
+    name: "iShares Core U.S. Aggregate Bond ETF",
+    sleeveFit: "Tactical",
+    sector: "Investment Grade Bonds",
+    price: 0,
+    signalScore: 75,
+    upside: 0.04,
+    revisionScore: 90,
+    momentumScore: 58,
+    qualityScore: 92,
+    dispersion: 0.05,
+    notes: "Default tactical/defensive sleeve. H0 rotates 50% to AGG; H1 rotates 25% to AGG.",
   },
   {
     rank: 20,
-    ticker: "FICO",
-    name: "Fair Isaac",
-    sleeveFit: "Tactical",
-    sector: "Information Services",
-    price: 2180,
-    signalScore: 89,
-    upside: 0.19,
-    revisionScore: 82,
-    momentumScore: 81,
-    qualityScore: 97,
-    dispersion: 0.18,
-    notes: "Exceptional quality; high price / concentration sizing issue.",
-  },
-  {
-    rank: 21,
-    ticker: "SYK",
-    name: "Stryker",
-    sleeveFit: "Infrastructure",
-    sector: "Healthcare",
-    price: 395,
-    signalScore: 80,
-    upside: 0.12,
-    revisionScore: 73,
-    momentumScore: 70,
-    qualityScore: 91,
-    dispersion: 0.14,
-    notes: "Healthcare / medtech quality bench.",
-  },
-  {
-    rank: 22,
-    ticker: "TRANE",
-    name: "Trane Technologies",
-    sleeveFit: "Infrastructure",
-    sector: "Industrials",
-    price: 410,
-    signalScore: 79,
-    upside: 0.11,
-    revisionScore: 72,
-    momentumScore: 76,
-    qualityScore: 88,
-    dispersion: 0.16,
-    notes: "HVAC / efficiency compounder.",
-  },
-  {
-    rank: 23,
-    ticker: "META",
-    name: "Meta Platforms",
-    sleeveFit: "Infrastructure",
-    sector: "Communication Services",
-    price: 640,
-    signalScore: 82,
-    upside: 0.12,
-    revisionScore: 77,
-    momentumScore: 79,
-    qualityScore: 92,
-    dispersion: 0.16,
-    notes: "Core platform; AI spend discipline watch.",
-  },
-  {
-    rank: 24,
-    ticker: "COST",
-    name: "Costco",
-    sleeveFit: "Infrastructure",
-    sector: "Consumer Staples",
-    price: 980,
-    signalScore: 76,
-    upside: 0.08,
+    ticker: "BIZD",
+    name: "VanEck BDC Income ETF",
+    sleeveFit: "BDC / Private Credit",
+    sector: "BDC ETF / Benchmark",
+    price: 0,
+    signalScore: 74,
+    upside: 0.10,
     revisionScore: 70,
-    momentumScore: 72,
-    qualityScore: 96,
-    dispersion: 0.09,
-    notes: "Quality compounder; valuation usually demanding.",
+    momentumScore: 64,
+    qualityScore: 72,
+    dispersion: 0.16,
+    notes: "BDC benchmark / replacement candidate from blended benchmark. Use as sleeve bench, not default core holding unless it scores better than individual BDCs.",
   },
 ] as Omit<BenchCandidate, keyof typeof DEFAULT_TA_FIELDS>[]).map((candidate) => ({
   ...DEFAULT_TA_FIELDS,
@@ -777,6 +720,14 @@ function upsideToScore(upside: number): number {
   return clampNumber((upside / 0.25) * 100, 0, 100);
 }
 
+function incomeYieldToScore(yieldOrReturn: number): number {
+  const y = clampNumber(yieldOrReturn, 0, 0.25);
+  if (y <= 0.04) return clampNumber((y / 0.04) * 55, 0, 55);
+  if (y <= 0.10) return 55 + ((y - 0.04) / 0.06) * 40;
+  if (y <= 0.14) return 95 - ((y - 0.10) / 0.04) * 15;
+  return 60;
+}
+
 function dispersionToScore(dispersion: number): number {
   return clampNumber(100 - dispersion * 200, 0, 100);
 }
@@ -840,18 +791,19 @@ function calculateTitanSignalScore(input: {
   above200dma?: boolean;
   technicalExtension?: number;
 }): number {
-  const upsideScore = upsideToScore(input.upside);
-  const momentumComposite = clampNumber(
-    input.momentumScore * 0.7 + input.revisionScore * 0.3,
-    0,
-    100,
-  );
+  const yieldScore = incomeYieldToScore(input.upside);
+  const distributionSafetyScore = clampNumber(input.revisionScore, 0, 100);
+  const momentumScore = clampNumber(input.momentumScore, 0, 100);
+  const qualityScore = clampNumber(input.qualityScore, 0, 100);
+  const discountRiskScore = dispersionToScore(input.dispersion);
   const technicalScore = calculateTechnicalSetupScore(input);
   const score =
-    upsideScore * 0.3 +
-    momentumComposite * 0.25 +
-    input.qualityScore * 0.2 +
-    technicalScore * 0.25;
+    yieldScore * 0.25 +
+    distributionSafetyScore * 0.25 +
+    momentumScore * 0.15 +
+    qualityScore * 0.2 +
+    discountRiskScore * 0.05 +
+    technicalScore * 0.1;
   return roundNumber(clampNumber(score, 0, 100), 0);
 }
 
@@ -1002,21 +954,44 @@ function displayTaFields(
   };
 }
 
+function titanAssetLocation(tickerInput: string, sleeve: Sleeve): { pocket: string; rationale: string } {
+  const ticker = normalizeTicker(tickerInput);
+  if (["MPLX", "EPD", "ET"].includes(ticker)) {
+    return { pocket: "Taxable only", rationale: "Direct MLP / K-1; avoid IRA UBTI complexity." };
+  }
+  if (["ARCC", "MAIN", "HTGC", "GBDC", "CSWC", "BIZD"].includes(ticker) || sleeve === "BDC / Private Credit") {
+    return { pocket: "IRA / Roth preferred", rationale: "BDC income is generally ordinary-income heavy." };
+  }
+  if (["XYLD", "DIVO"].includes(ticker) || sleeve === "Option-Income") {
+    return { pocket: "IRA / Roth preferred", rationale: "Option-income distributions can be ordinary-income heavy." };
+  }
+  if (["UTG", "PDI", "PTY", "DSL", "BGT", "ECC", "PCEF"].includes(ticker) || sleeve === "Credit / CEF") {
+    return { pocket: "Taxable preferred", rationale: "CEF ROC can defer tax through basis reduction; monitor discounts and coverage." };
+  }
+  if (ticker === "WMB") {
+    return { pocket: "Either", rationale: "C-corp midstream; standard dividend tax profile." };
+  }
+  if (sleeve === "Tactical") {
+    return { pocket: "Trust / entity or portfolio sleeve", rationale: "Used for defensive rotation and tactical mean reversion." };
+  }
+  return { pocket: "Case-by-case", rationale: "Confirm distribution character and account-level tax constraints." };
+}
+
 function actionTone(action: string): string {
-  if (["BUY", "COVER"].includes(action)) return "text-[#067647]";
-  if (["SELL", "BUY BACK", "TAX HARVEST"].includes(action))
+  if (["HOLD", "TACTICAL DEPLOY", "BUY", "COVER"].includes(action)) return "text-[#067647]";
+  if (["REDUCE MARGIN", "SELL", "BUY BACK", "TAX HARVEST"].includes(action))
     return "text-[#B42318]";
-  if (["TRIM", "REBALANCE", "DAF CANDIDATE"].includes(action))
+  if (["DEFENSIVE ROTATE", "CUT REVIEW", "FULL REBALANCE", "TRIM", "REBALANCE", "DAF CANDIDATE"].includes(action))
     return "text-[#C9A84C]";
   return "text-[#0D1B2A]";
 }
 
 function statusPill(action: string): string {
-  if (["BUY", "COVER"].includes(action))
+  if (["HOLD", "TACTICAL DEPLOY", "BUY", "COVER"].includes(action))
     return "bg-green-50 text-green-800 border-green-200";
-  if (["SELL", "BUY BACK", "TAX HARVEST"].includes(action))
+  if (["REDUCE MARGIN", "SELL", "BUY BACK", "TAX HARVEST"].includes(action))
     return "bg-red-50 text-red-800 border-red-200";
-  if (["TRIM", "REBALANCE", "DAF CANDIDATE"].includes(action))
+  if (["DEFENSIVE ROTATE", "CUT REVIEW", "FULL REBALANCE", "TRIM", "REBALANCE", "DAF CANDIDATE"].includes(action))
     return "bg-yellow-50 text-yellow-800 border-yellow-200";
   return "bg-slate-50 text-slate-700 border-slate-200";
 }
@@ -1256,9 +1231,7 @@ export default function TitanDashboard() {
       const optionQuery = optionSymbols
         ? `&includeOptions=1&optionSymbols=${encodeURIComponent(optionSymbols)}`
         : "";
-      const signalQuery = signalSymbols
-        ? `&includeSignal=1&signalSymbols=${encodeURIComponent(signalSymbols)}`
-        : "";
+      const signalQuery = "";
       const technicalQuery = signalSymbols
         ? `&includeTechnical=1&technicalSymbols=${encodeURIComponent(signalSymbols)}`
         : "";
@@ -1278,7 +1251,7 @@ export default function TitanDashboard() {
         throw new Error(data.error || "Live market data request failed.");
       }
       setLiveQuotes(data.quotes ?? {});
-      setSignalData(data.signal ?? {});
+      setSignalData({});
       setTechnicalData(data.technical ?? {});
       setOptionCandidates(data.options ?? {});
       setLastLiveRefresh(data.asOf ?? new Date().toISOString());
@@ -1287,16 +1260,11 @@ export default function TitanDashboard() {
         prev.map((h) => {
           const ticker = normalizeTicker(h.ticker);
           const q = data.quotes?.[ticker];
-          const auto = data.signal?.[ticker];
           const ta = data.technical?.[ticker];
           const next = {
             ...h,
             price: q?.price ? Number(q.price.toFixed(2)) : h.price,
-            upside: auto?.upside ?? h.upside,
-            revisionScore: auto?.recommendationScore ?? h.revisionScore,
-            momentumScore: auto?.momentumScore ?? h.momentumScore,
-            qualityScore: auto?.qualityScore ?? h.qualityScore,
-            dispersion: auto?.dispersion ?? h.dispersion,
+
             above200dma: ta?.above200dma ?? h.above200dma,
             technicalExtension: ta?.technicalExtension ?? h.technicalExtension,
             buyZoneLow: ta?.buyZoneLow ?? h.buyZoneLow ?? 0,
@@ -1318,16 +1286,11 @@ export default function TitanDashboard() {
         prev.map((b) => {
           const ticker = normalizeTicker(b.ticker);
           const q = data.quotes?.[ticker];
-          const auto = data.signal?.[ticker];
           const ta = data.technical?.[ticker];
           const next = {
             ...b,
             price: q?.price ? Number(q.price.toFixed(2)) : b.price,
-            upside: auto?.upside ?? b.upside,
-            revisionScore: auto?.recommendationScore ?? b.revisionScore,
-            momentumScore: auto?.momentumScore ?? b.momentumScore,
-            qualityScore: auto?.qualityScore ?? b.qualityScore,
-            dispersion: auto?.dispersion ?? b.dispersion,
+
             buyZoneLow: ta?.buyZoneLow ?? b.buyZoneLow ?? 0,
             buyZoneHigh: ta?.buyZoneHigh ?? b.buyZoneHigh ?? 0,
             buyAnchor: ta?.buyAnchor ?? b.buyAnchor ?? 0,
@@ -1482,16 +1445,26 @@ export default function TitanDashboard() {
       return { ...c, capture, buyback };
     });
 
+    const hardStopActive = regime.overlay.startsWith("Hard stop");
+    const cutReviewActive = enrichedHoldings.some(
+      (h) => h.gain <= -0.15 || h.momentumScore < 40,
+    );
     const firstHoldingAction = enrichedHoldings.find(
       (h) => h.action !== "HOLD",
     )?.action;
     const primaryAction: ActionState =
       holdings.length === 0
-        ? "BUY"
-        : Math.abs(leverageGap) > 0.03
-          ? "REBALANCE"
-          : (firstHoldingAction ??
-            (callAlerts.some((c) => c.buyback) ? "BUY BACK" : "HOLD"));
+        ? "FULL REBALANCE"
+        : hardStopActive && currentLeverage > regime.target + 0.03
+          ? "REDUCE MARGIN"
+          : ["H0", "H1"].includes(regime.code)
+            ? "DEFENSIVE ROTATE"
+            : cutReviewActive
+              ? "CUT REVIEW"
+              : Math.abs(leverageGap) > 0.03
+                ? "FULL REBALANCE"
+                : (firstHoldingAction ??
+                  (callAlerts.some((c) => c.buyback) ? "BUY BACK" : "HOLD"));
 
     return {
       longMarketValue,
@@ -1521,14 +1494,14 @@ export default function TitanDashboard() {
       [];
     if (holdings.length === 0) {
       items.push({
-        action: "BUY",
+        action: "FULL REBALANCE",
         title: "Build initial TITAN portfolio",
         detail:
           "Portfolio is empty. Use the Bench tab to promote TITAN candidates into Holdings, then enter shares, cost basis, current price, and holding period.",
       });
       return items;
     }
-    if (snapshot.primaryAction === "REBALANCE") {
+    if (snapshot.primaryAction === "FULL REBALANCE") {
       items.push({
         action: "REBALANCE",
         title: "Leverage gap exceeds 3%",
@@ -1998,7 +1971,7 @@ export default function TitanDashboard() {
             snapshot.primaryAction,
             holdings.length === 0
               ? "Build initial TITAN book"
-              : snapshot.primaryAction === "REBALANCE"
+              : snapshot.primaryAction === "FULL REBALANCE"
                 ? "Leverage deviation >3%"
                 : "Rule-engine output",
             actionTone(snapshot.primaryAction),
@@ -2526,7 +2499,10 @@ export default function TitanDashboard() {
                                 )
                               }
                             >
-                              <option>Core</option>
+                              <option>Infrastructure</option>
+                              <option>BDC / Private Credit</option>
+                              <option>Option-Income</option>
+                              <option>Credit / CEF</option>
                               <option>Tactical</option>
                             </select>
                           </td>
@@ -2616,22 +2592,22 @@ export default function TitanDashboard() {
 
           {activeTab === "titanScore" && (
             <section>
-              <h3 className="text-xl font-black">TITAN Signal Engine</h3>
+              <h3 className="text-xl font-black">TITAN Income Score Engine</h3>
               <p className="mt-2 text-sm text-[#344054]">
-                TITAN scoring is an income-risk screen, not a blind yield chase. Final ownership requires yield sustainability, distribution history, credit trend, valuation/discount discipline, momentum confirmation, and liquidity.
+                TITAN scoring is an income-risk screen, not a blind yield chase. Final ownership requires yield sustainability, distribution safety, credit trend, discount/valuation discipline, momentum confirmation, liquidity, tax-location fit, and sleeve role.
               </p>
               <div className="mt-4 grid gap-3 md:grid-cols-4">
                 {metricCard(
-                  "Yield / Upside",
+                  "Yield / Income",
                   "25%",
-                  "Yield plus total return",
+                  "Current yield with risk cap",
                 )}
-                {metricCard("Credit Trend", "15%", "Income-market health")}
-                {metricCard("Distribution Safety", "20%", "Cut-risk control")}
-                {metricCard("Liquidity", "10%", "ADV / tradability")}
+                {metricCard("Distribution Safety", "25%", "Cut-risk control")}
                 {metricCard("Momentum", "15%", "3m / 6m trend")}
-                {metricCard("Quality", "10%", "Coverage / NAV / leverage")}
-                {metricCard("Discount / Valuation", "5%", "CEF z-score discipline")}
+                {metricCard("Quality / Liquidity", "20%", "Coverage / NAV / ADV")}
+                {metricCard("Discount / Risk", "5%", "CEF z-score / dispersion")}
+                {metricCard("Technical Setup", "10%", "Buy zone / trend")}
+                {metricCard("Tax Location", "Rule 11", "Account routing")}
                 {metricCard("Bench", "Top 20", "Candidate pool")}
               </div>
               <div className="mt-5 border border-[#E5D8A8] bg-[#F0EBD8] p-4 text-sm leading-6 text-[#344054]">
@@ -2643,12 +2619,12 @@ export default function TitanDashboard() {
                     <tr>
                       {[
                         "Ticker",
-                        "Upside",
-                        "Revisions / Reco",
+                        "Yield / Income",
+                        "Distribution Safety",
                         "Momentum",
-                        "Quality",
-                        "Discount / Valuation",
-                        "Target Median",
+                        "Quality / Liquidity",
+                        "Discount / Risk",
+                        "Optimal Pocket",
                         "TA Buy Zone",
                         "TA Status",
                         "Source Status",
@@ -2671,37 +2647,32 @@ export default function TitanDashboard() {
                     )
                       .slice(0, 30)
                       .map((ticker) => {
-                        const sig = signalData[ticker];
+                        const candidate =
+                          benchCandidates.find((b) => normalizeTicker(b.ticker) === ticker) ??
+                          holdings.find((h) => normalizeTicker(h.ticker) === ticker);
+                        const location = candidate
+                          ? titanAssetLocation(candidate.ticker, "sleeve" in candidate ? candidate.sleeve : candidate.sleeveFit)
+                          : { pocket: "Manual", rationale: "No candidate record." };
                         return (
                           <tr key={ticker} className="border-b border-[#E5D8A8]">
                             <td className="p-3 font-black">{ticker}</td>
                             <td className="p-3">
-                              {sig?.upside === null || sig?.upside === undefined
-                                ? "Manual"
-                                : formatPercent(sig.upside)}
+                              {candidate ? formatPercent(candidate.upside) : "Manual"}
                             </td>
                             <td className="p-3">
-                              {sig?.recommendationScore === null || sig?.recommendationScore === undefined
-                                ? "Manual"
-                                : `${sig.recommendationScore}/100`}
+                              {candidate ? `${candidate.revisionScore}/100` : "Manual"}
                             </td>
                             <td className="p-3">
-                              {sig?.momentumScore === null || sig?.momentumScore === undefined
-                                ? "Manual"
-                                : `${sig.momentumScore}/100`}
+                              {candidate ? `${candidate.momentumScore}/100` : "Manual"}
                             </td>
                             <td className="p-3">
-                              {sig?.qualityScore === null || sig?.qualityScore === undefined
-                                ? "Manual"
-                                : `${sig.qualityScore}/100`}
+                              {candidate ? `${candidate.qualityScore}/100` : "Manual"}
                             </td>
                             <td className="p-3">
-                              {sig?.dispersion === null || sig?.dispersion === undefined
-                                ? "Manual"
-                                : formatPercent(sig.dispersion)}
+                              {candidate ? formatPercent(candidate.dispersion) : "Manual"}
                             </td>
-                            <td className="p-3">
-                              {sig?.targetMedian ? formatCurrency(sig.targetMedian) : "—"}
+                            <td className="p-3 text-xs text-[#344054]">
+                              <strong>{location.pocket}</strong><br />{location.rationale}
                             </td>
                             <td className="p-3">
                               {technicalData[ticker]?.buyZoneLow && technicalData[ticker]?.buyZoneHigh
@@ -2714,9 +2685,7 @@ export default function TitanDashboard() {
                                 : "Refresh Live Data to load TA."}
                             </td>
                             <td className="p-3 text-xs text-[#344054]">
-                              {sig
-                                ? `${sig.upsideSource}; ${sig.dispersionSource}; ${sig.recommendationTrend}`
-                                : "Refresh Live Data to load Finnhub signal fields."}
+                              Manual income score; live refresh updates quotes and technical fields only.
                             </td>
                           </tr>
                         );
@@ -2729,11 +2698,9 @@ export default function TitanDashboard() {
 
           {activeTab === "taxLots" && (
             <section>
-              <h3 className="text-xl font-black">Tax Lots</h3>
+              <h3 className="text-xl font-black">Tax / Asset Location</h3>
               <p className="mt-2 text-sm text-[#344054]">
-                Current version treats each holding as one lot. Later, this
-                should become a multi-lot register. Prefer 366+ day holds, but
-                tax-loss harvest anytime if the replacement is better.
+                TITAN Rule 11 routes each income asset to the most tax-efficient account type where practical: MLPs to taxable, BDCs and option-income funds to IRA/Roth, ROC-heavy CEFs to taxable, and tactical exposure to trust/entity or portfolio-level sleeves.
               </p>
               <div className="mt-4 grid gap-3">
                 {snapshot.enrichedHoldings.length === 0 ? (
@@ -2742,11 +2709,11 @@ export default function TitanDashboard() {
                   </div>
                 ) : (
                   snapshot.enrichedHoldings.map((lot) => {
-                    const harvest = lot.gain < -0.08;
+                    const location = titanAssetLocation(lot.ticker, lot.sleeve);
                     return (
                       <div
                         key={lot.id}
-                        className="grid gap-3 border border-[#E5D8A8] p-4 md:grid-cols-[120px_1fr_120px_140px]"
+                        className="grid gap-3 border border-[#E5D8A8] p-4 md:grid-cols-[120px_180px_1fr_120px]"
                       >
                         <div className="font-black">
                           {lot.ticker}
@@ -2754,10 +2721,11 @@ export default function TitanDashboard() {
                             {lot.sleeve}
                           </div>
                         </div>
+                        <div className="text-sm font-black text-[#0D1B2A]">
+                          {location.pocket}
+                        </div>
                         <div className="text-sm text-[#344054]">
-                          {lot.daysHeld >= 366
-                            ? "LTCG eligible. Sell highest-basis LT shares first for cash needs; consider DAF only for low-basis winners."
-                            : `Not yet LTCG eligible. ${366 - lot.daysHeld} days remaining.`}
+                          {location.rationale}
                         </div>
                         <div
                           className={
@@ -2765,19 +2733,6 @@ export default function TitanDashboard() {
                           }
                         >
                           {formatPercent(lot.gain)}
-                        </div>
-                        <div>
-                          {harvest ? (
-                            <span className="text-[#B42318] font-bold">
-                              Harvest candidate
-                            </span>
-                          ) : lot.daysHeld >= 366 ? (
-                            <span className="text-[#067647] font-bold">
-                              LTCG
-                            </span>
-                          ) : (
-                            <span className="text-[#B42318] font-bold">ST</span>
-                          )}
                         </div>
                       </div>
                     );
@@ -2793,10 +2748,7 @@ export default function TitanDashboard() {
                 <div>
                   <h3 className="text-xl font-black">Covered Call Overlay</h3>
                   <p className="mt-2 text-sm text-[#344054]">
-                    Calls are income-enhancing, not position-exiting. Finnhub
-                    option-chain candidates are refreshed with live data and
-                    should be verified in your brokerage platform before
-                    execution.
+                    Optional overlay only. TITAN's base rulebook does not require covered calls. Use only on overweight, technically extended positions when assignment would be acceptable or risk-reducing.
                   </p>
                 </div>
                 <button

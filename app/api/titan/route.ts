@@ -950,7 +950,7 @@ export async function GET(request: Request) {
   }
 
   const url = new URL(request.url);
-  const requestedSymbols = (url.searchParams.get("symbols") ?? "SPY")
+  const requestedSymbols = (url.searchParams.get("symbols") ?? "SPY,PCEF,HYG,AGG,BIZD,AMLP,XYLD")
     .split(",")
     .map(normalizeTicker)
     .filter(Boolean);
