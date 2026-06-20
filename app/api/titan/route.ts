@@ -135,6 +135,7 @@ type TechnicalAutoData = {
 type AnyRecord = Record<string, unknown>;
 
 const FINNHUB_BASE = "https://finnhub.io/api/v1";
+const YAHOO_CHART_BASE = "https://query1.finance.yahoo.com/v8/finance/chart";
 
 function normalizeTicker(input: string): string {
   return input.trim().toUpperCase();
@@ -218,25 +219,153 @@ async function fetchFinnhubJson<T>(path: string, token: string): Promise<T> {
   return parsed as T;
 }
 
-async function fetchQuote(symbol: string, token: string): Promise<LiveQuote> {
-  const q = await fetchFinnhubJson<FinnhubQuote>(
-    `/quote?symbol=${encodeURIComponent(symbol)}`,
-    token,
-  );
-  const price = finiteNumber(q.c);
-  const asOf = q.t
-    ? new Date(q.t * 1000).toISOString()
-    : new Date().toISOString();
+function yahooSymbolAliases(symbol: string): string[] {
+  const normalized = normalizeTicker(symbol);
+  const aliases = [normalized];
+  const dashAlias = normalized.replace(/\./g, "-");
+  if (dashAlias !== normalized) aliases.push(dashAlias);
+  return Array.from(new Set(aliases));
+}
+
+function getYahooChartResult(data: unknown): AnyRecord | null {
+  if (!data || typeof data !== "object") return null;
+  const chart = (data as AnyRecord).chart;
+  if (!chart || typeof chart !== "object") return null;
+  const result = (chart as AnyRecord).result;
+  if (!Array.isArray(result) || result.length === 0) return null;
+  const first = result[0];
+  return first && typeof first === "object" ? (first as AnyRecord) : null;
+}
+
+async function fetchYahooChartResult(
+  symbol: string,
+  range = "2y",
+  interval = "1d",
+): Promise<{ result: AnyRecord; yahooSymbol: string }> {
+  let lastError: Error | null = null;
+  for (const yahooSymbol of yahooSymbolAliases(symbol)) {
+    try {
+      const response = await fetch(
+        `${YAHOO_CHART_BASE}/${encodeURIComponent(yahooSymbol)}?range=${encodeURIComponent(range)}&interval=${encodeURIComponent(interval)}`,
+        {
+          cache: "no-store",
+          headers: {
+            accept: "application/json,text/plain,*/*",
+            "user-agent": "Mozilla/5.0 TenacityDashboard/1.0",
+          },
+        },
+      );
+      const raw = await response.text();
+      let parsed: unknown = null;
+      try {
+        parsed = raw ? JSON.parse(raw) : null;
+      } catch {
+        const preview = raw.slice(0, 120).replace(/\s+/g, " ");
+        throw new Error(`Yahoo returned non-JSON for ${symbol}: ${preview}`);
+      }
+      if (!response.ok) {
+        throw new Error(`Yahoo request failed for ${symbol}: ${response.status} ${response.statusText}`);
+      }
+      const result = getYahooChartResult(parsed);
+      if (!result) throw new Error(`Yahoo returned no chart result for ${symbol}`);
+      return { result, yahooSymbol };
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error("Yahoo quote unavailable");
+    }
+  }
+  throw lastError ?? new Error(`Yahoo quote unavailable for ${symbol}`);
+}
+
+async function fetchYahooQuote(symbol: string): Promise<LiveQuote> {
+  const { result } = await fetchYahooChartResult(symbol, "5d", "1d");
+  const meta = result.meta && typeof result.meta === "object" ? (result.meta as AnyRecord) : {};
+  const timestamps = Array.isArray(result.timestamp) ? result.timestamp : [];
+  const indicators = result.indicators && typeof result.indicators === "object" ? (result.indicators as AnyRecord) : {};
+  const quoteRows = Array.isArray(indicators.quote) ? indicators.quote : [];
+  const quote = quoteRows[0] && typeof quoteRows[0] === "object" ? (quoteRows[0] as AnyRecord) : {};
+  const close = Array.isArray(quote.close) ? quote.close.map(finiteNumber).filter((x): x is number => x !== null) : [];
+
+  const price =
+    finiteNumber(meta.regularMarketPrice) ??
+    finiteNumber(meta.previousClose) ??
+    close[close.length - 1] ??
+    null;
+  if (!price || price <= 0) throw new Error(`Yahoo returned no usable price for ${symbol}`);
+
+  const previousClose =
+    finiteNumber(meta.chartPreviousClose) ??
+    finiteNumber(meta.regularMarketPreviousClose) ??
+    (close.length >= 2 ? close[close.length - 2] : null);
+  const change = previousClose && previousClose > 0 ? price - previousClose : null;
+  const changePercent = change !== null && previousClose && previousClose > 0 ? (change / previousClose) * 100 : null;
+  const lastTimestamp = finiteNumber(meta.regularMarketTime) ?? finiteNumber(timestamps[timestamps.length - 1]);
 
   return {
     ticker: symbol,
     price: round(price),
-    change: round(finiteNumber(q.d)),
-    changePercent: round(finiteNumber(q.dp)),
-    previousClose: round(finiteNumber(q.pc)),
-    asOf,
-    source: "Finnhub",
+    change: round(change),
+    changePercent: round(changePercent),
+    previousClose: round(previousClose),
+    asOf: lastTimestamp ? new Date(lastTimestamp * 1000).toISOString() : new Date().toISOString(),
+    source: "Yahoo Finance fallback",
   };
+}
+
+async function fetchYahooDailyCandles(
+  symbol: string,
+  lookbackDays = 430,
+): Promise<DailyCandle[]> {
+  const range = lookbackDays > 500 ? "3y" : "2y";
+  const { result } = await fetchYahooChartResult(symbol, range, "1d");
+  const timestamps = Array.isArray(result.timestamp) ? result.timestamp : [];
+  const indicators = result.indicators && typeof result.indicators === "object" ? (result.indicators as AnyRecord) : {};
+  const quoteRows = Array.isArray(indicators.quote) ? indicators.quote : [];
+  const quote = quoteRows[0] && typeof quoteRows[0] === "object" ? (quoteRows[0] as AnyRecord) : {};
+  const closes = Array.isArray(quote.close) ? quote.close : [];
+  const highs = Array.isArray(quote.high) ? quote.high : [];
+  const lows = Array.isArray(quote.low) ? quote.low : [];
+  const volumes = Array.isArray(quote.volume) ? quote.volume : [];
+
+  return closes
+    .map((close, index) => {
+      const c = finiteNumber(close);
+      const h = finiteNumber(highs[index]) ?? c;
+      const l = finiteNumber(lows[index]) ?? c;
+      const v = finiteNumber(volumes[index]) ?? 0;
+      const t = finiteNumber(timestamps[index]) ?? 0;
+      if (c === null || h === null || l === null) return null;
+      return { close: c, high: h, low: l, volume: v, time: t };
+    })
+    .filter((x): x is DailyCandle => x !== null);
+}
+
+async function fetchQuote(symbol: string, token: string): Promise<LiveQuote> {
+  try {
+    const q = await fetchFinnhubJson<FinnhubQuote>(
+      `/quote?symbol=${encodeURIComponent(symbol)}`,
+      token,
+    );
+    const price = finiteNumber(q.c);
+    if (price && price > 0) {
+      const asOf = q.t
+        ? new Date(q.t * 1000).toISOString()
+        : new Date().toISOString();
+
+      return {
+        ticker: symbol,
+        price: round(price),
+        change: round(finiteNumber(q.d)),
+        changePercent: round(finiteNumber(q.dp)),
+        previousClose: round(finiteNumber(q.pc)),
+        asOf,
+        source: "Finnhub",
+      };
+    }
+  } catch {
+    // Try the fallback provider below. This is common for some ETFs/CEFs/BDCs.
+  }
+
+  return fetchYahooQuote(symbol);
 }
 
 async function fetchDailyCloses(
@@ -572,34 +701,41 @@ async function fetchDailyCandles(
   token: string,
   lookbackDays = 430,
 ): Promise<DailyCandle[]> {
-  const now = Math.floor(Date.now() / 1000);
-  const from = now - lookbackDays * 24 * 60 * 60;
-  const candle = await fetchFinnhubJson<FinnhubCandle>(
-    `/stock/candle?symbol=${encodeURIComponent(symbol)}&resolution=D&from=${from}&to=${now}`,
-    token,
-  );
-
-  const closes = Array.isArray(candle.c) ? candle.c : [];
-  if (candle.s !== "ok" || closes.length === 0) return [];
-  const highs = Array.isArray(candle.h) ? candle.h : [];
-  const lows = Array.isArray(candle.l) ? candle.l : [];
-  const volumes = Array.isArray(candle.v) ? candle.v : [];
-  const times = Array.isArray(candle.t) ? candle.t : [];
-
-  return closes
-    .map((close, index) => ({
-      close,
-      high: highs[index] ?? close,
-      low: lows[index] ?? close,
-      volume: volumes[index] ?? 0,
-      time: times[index] ?? 0,
-    }))
-    .filter(
-      (x) =>
-        Number.isFinite(x.close) &&
-        Number.isFinite(x.high) &&
-        Number.isFinite(x.low),
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const from = now - lookbackDays * 24 * 60 * 60;
+    const candle = await fetchFinnhubJson<FinnhubCandle>(
+      `/stock/candle?symbol=${encodeURIComponent(symbol)}&resolution=D&from=${from}&to=${now}`,
+      token,
     );
+
+    const closes = Array.isArray(candle.c) ? candle.c : [];
+    if (candle.s === "ok" && closes.length > 0) {
+      const highs = Array.isArray(candle.h) ? candle.h : [];
+      const lows = Array.isArray(candle.l) ? candle.l : [];
+      const volumes = Array.isArray(candle.v) ? candle.v : [];
+      const times = Array.isArray(candle.t) ? candle.t : [];
+
+      return closes
+        .map((close, index) => ({
+          close,
+          high: highs[index] ?? close,
+          low: lows[index] ?? close,
+          volume: volumes[index] ?? 0,
+          time: times[index] ?? 0,
+        }))
+        .filter(
+          (x) =>
+            Number.isFinite(x.close) &&
+            Number.isFinite(x.high) &&
+            Number.isFinite(x.low),
+        );
+    }
+  } catch {
+    // Fall through to Yahoo below.
+  }
+
+  return fetchYahooDailyCandles(symbol, lookbackDays);
 }
 
 function lastN<T>(items: T[], n: number): T[] {
