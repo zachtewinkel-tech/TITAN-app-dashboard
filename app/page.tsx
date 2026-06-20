@@ -17,6 +17,7 @@ type Tab =
 
 type Sleeve = "Infrastructure" | "BDC / Private Credit" | "Option-Income" | "Credit / CEF" | "Tactical";
 type TaConfidence = "Manual" | "Low" | "Medium" | "High";
+type BenchRole = "Current Core" | "Challenger" | "Sleeve Benchmark" | "Tactical" | "Watchlist";
 type ActionState =
   | "HOLD"
   | "REDUCE MARGIN"
@@ -68,6 +69,7 @@ type BenchCandidate = {
   rank: number;
   ticker: string;
   name: string;
+  role: BenchRole;
   sleeveFit: Sleeve;
   sector: string;
   price: number;
@@ -77,6 +79,13 @@ type BenchCandidate = {
   momentumScore: number;
   qualityScore: number;
   dispersion: number;
+  yieldRate: number;
+  discountNav: number;
+  coverage: number;
+  sixMonthReturn: number;
+  discountZ: number;
+  liquidityScore: number;
+  taxPocket: string;
   buyZoneLow: number;
   buyZoneHigh: number;
   buyAnchor: number;
@@ -219,7 +228,7 @@ const TAB_LABELS: Record<Tab, string> = {
 
 const STORAGE_KEYS = {
   holdings: "titanIncomeHoldings.v2",
-  bench: "titanIncomeBench.v2",
+  bench: "titanIncomeBench.v3",
   calls: "titanIncomeCoveredCalls.v2",
   settings: "titanIncomeSettings.v2",
   liveSettings: "titanIncomeLiveSettings.v2",
@@ -236,307 +245,78 @@ const DEFAULT_TA_FIELDS = {
   taNotes: "",
 };
 
+const DEFAULT_INCOME_FIELDS = {
+  role: "Challenger" as BenchRole,
+  yieldRate: 0,
+  discountNav: 0,
+  coverage: 1,
+  sixMonthReturn: 0,
+  discountZ: 0,
+  liquidityScore: 75,
+  taxPocket: "Case-by-case",
+};
+
 const DEFAULT_BENCH: BenchCandidate[] = ([
-  {
-    rank: 1,
-    ticker: "ARCC",
-    name: "Ares Capital",
-    sleeveFit: "BDC / Private Credit",
-    sector: "BDC / Private Credit",
-    price: 0,
-    signalScore: 89,
-    upside: 0.09,
-    revisionScore: 88,
-    momentumScore: 72,
-    qualityScore: 88,
-    dispersion: 0.10,
-    notes: "Target 8% core BDC position. IRA/Roth preferred; high current yield with scale and liquidity.",
-  },
-  {
-    rank: 2,
-    ticker: "MPLX",
-    name: "MPLX LP",
-    sleeveFit: "Infrastructure",
-    sector: "Infrastructure / Midstream",
-    price: 0,
-    signalScore: 88,
-    upside: 0.08,
-    revisionScore: 88,
-    momentumScore: 76,
-    qualityScore: 86,
-    dispersion: 0.08,
-    notes: "Target 7% core MLP. Taxable only; K-1 / UBTI complexity in IRA.",
-  },
-  {
-    rank: 3,
-    ticker: "EPD",
-    name: "Enterprise Products Partners",
-    sleeveFit: "Infrastructure",
-    sector: "Infrastructure / Midstream",
-    price: 0,
-    signalScore: 88,
-    upside: 0.07,
-    revisionScore: 90,
-    momentumScore: 72,
-    qualityScore: 90,
-    dispersion: 0.07,
-    notes: "Target 7% core MLP. Taxable only; conservative midstream ballast.",
-  },
-  {
-    rank: 4,
-    ticker: "XYLD",
-    name: "Global X S&P 500 Covered Call ETF",
-    sleeveFit: "Option-Income",
-    sector: "Option-Income",
-    price: 0,
-    signalScore: 82,
-    upside: 0.09,
-    revisionScore: 78,
-    momentumScore: 60,
-    qualityScore: 82,
-    dispersion: 0.11,
-    notes: "Target 8% option-income sleeve. IRA/Roth preferred because distributions are often ordinary-income heavy.",
-  },
-  {
-    rank: 5,
-    ticker: "DIVO",
-    name: "Amplify CWP Enhanced Dividend Income ETF",
-    sleeveFit: "Option-Income",
-    sector: "Option-Income",
-    price: 0,
-    signalScore: 84,
-    upside: 0.05,
-    revisionScore: 84,
-    momentumScore: 68,
-    qualityScore: 86,
-    dispersion: 0.08,
-    notes: "Target 7% option-income sleeve. Lower-beta premium harvest ballast.",
-  },
-  {
-    rank: 6,
-    ticker: "MAIN",
-    name: "Main Street Capital",
-    sleeveFit: "BDC / Private Credit",
-    sector: "BDC / Private Credit",
-    price: 0,
-    signalScore: 86,
-    upside: 0.06,
-    revisionScore: 90,
-    momentumScore: 70,
-    qualityScore: 92,
-    dispersion: 0.08,
-    notes: "Target 6% BDC. Quality BDC benchmark; valuation premium should be monitored.",
-  },
-  {
-    rank: 7,
-    ticker: "PDI",
-    name: "PIMCO Dynamic Income Fund",
-    sleeveFit: "Credit / CEF",
-    sector: "Credit / CEF",
-    price: 0,
-    signalScore: 84,
-    upside: 0.13,
-    revisionScore: 72,
-    momentumScore: 66,
-    qualityScore: 78,
-    dispersion: 0.18,
-    notes: "Target 7% credit CEF. Monitor leverage, distribution coverage, and premium/discount z-score.",
-  },
-  {
-    rank: 8,
-    ticker: "ET",
-    name: "Energy Transfer LP",
-    sleeveFit: "Infrastructure",
-    sector: "Infrastructure / Midstream",
-    price: 0,
-    signalScore: 84,
-    upside: 0.08,
-    revisionScore: 82,
-    momentumScore: 74,
-    qualityScore: 80,
-    dispersion: 0.12,
-    notes: "Target 5% core MLP. Taxable only; higher governance/leverage watch than EPD.",
-  },
-  {
-    rank: 9,
-    ticker: "UTG",
-    name: "Reaves Utility Income Fund",
-    sleeveFit: "Infrastructure",
-    sector: "Infrastructure / Utilities CEF",
-    price: 0,
-    signalScore: 82,
-    upside: 0.08,
-    revisionScore: 82,
-    momentumScore: 62,
-    qualityScore: 84,
-    dispersion: 0.13,
-    notes: "Target 5% infrastructure/utility CEF. Taxable preferred if ROC profile is favorable; monitor discount z-score.",
-  },
-  {
-    rank: 10,
-    ticker: "HTGC",
-    name: "Hercules Capital",
-    sleeveFit: "BDC / Private Credit",
-    sector: "BDC / Private Credit",
-    price: 0,
-    signalScore: 84,
-    upside: 0.10,
-    revisionScore: 78,
-    momentumScore: 74,
-    qualityScore: 82,
-    dispersion: 0.13,
-    notes: "Target 5% BDC. Venture-credit exposure; stronger cycle sensitivity than ARCC/MAIN.",
-  },
-  {
-    rank: 11,
-    ticker: "PTY",
-    name: "PIMCO Corporate & Income Opportunity Fund",
-    sleeveFit: "Credit / CEF",
-    sector: "Credit / CEF",
-    price: 0,
-    signalScore: 80,
-    upside: 0.10,
-    revisionScore: 70,
-    momentumScore: 66,
-    qualityScore: 78,
-    dispersion: 0.20,
-    notes: "Target 5% credit CEF. Strong sponsor but premium/discount discipline is critical.",
-  },
-  {
-    rank: 12,
-    ticker: "DSL",
-    name: "DoubleLine Income Solutions Fund",
-    sleeveFit: "Credit / CEF",
-    sector: "Credit / CEF",
-    price: 0,
-    signalScore: 79,
-    upside: 0.11,
-    revisionScore: 70,
-    momentumScore: 62,
-    qualityScore: 76,
-    dispersion: 0.17,
-    notes: "Target 5% credit CEF. Discount-capture candidate; monitor credit stress and distribution coverage.",
-  },
-  {
-    rank: 13,
-    ticker: "WMB",
-    name: "Williams Companies",
-    sleeveFit: "Infrastructure",
-    sector: "Infrastructure / Midstream C-Corp",
-    price: 0,
-    signalScore: 82,
-    upside: 0.05,
-    revisionScore: 84,
-    momentumScore: 76,
-    qualityScore: 86,
-    dispersion: 0.08,
-    notes: "Target 4% C-corp midstream. Either taxable or IRA; cleaner than MLPs.",
-  },
-  {
-    rank: 14,
-    ticker: "BGT",
-    name: "BlackRock Floating Rate Income Trust",
-    sleeveFit: "Credit / CEF",
-    sector: "Credit / CEF",
-    price: 0,
-    signalScore: 78,
-    upside: 0.09,
-    revisionScore: 72,
-    momentumScore: 64,
-    qualityScore: 78,
-    dispersion: 0.14,
-    notes: "Target 4% floating-rate CEF. Monitor rate regime, leverage cost, and loan-credit quality.",
-  },
-  {
-    rank: 15,
-    ticker: "CSWC",
-    name: "Capital Southwest",
-    sleeveFit: "BDC / Private Credit",
-    sector: "BDC / Private Credit",
-    price: 0,
-    signalScore: 80,
-    upside: 0.09,
-    revisionScore: 76,
-    momentumScore: 68,
-    qualityScore: 78,
-    dispersion: 0.14,
-    notes: "Target 3% BDC. Higher yield and smaller-cap BDC risk; IRA/Roth preferred.",
-  },
-  {
-    rank: 16,
-    ticker: "GBDC",
-    name: "Golub Capital BDC",
-    sleeveFit: "BDC / Private Credit",
-    sector: "BDC / Private Credit",
-    price: 0,
-    signalScore: 78,
-    upside: 0.10,
-    revisionScore: 74,
-    momentumScore: 62,
-    qualityScore: 78,
-    dispersion: 0.12,
-    notes: "Target 3% BDC. More conservative middle-market credit exposure; IRA/Roth preferred.",
-  },
-  {
-    rank: 17,
-    ticker: "ECC",
-    name: "Eagle Point Credit Company",
-    sleeveFit: "Credit / CEF",
-    sector: "Credit / CEF",
-    price: 0,
-    signalScore: 70,
-    upside: 0.16,
-    revisionScore: 55,
-    momentumScore: 58,
-    qualityScore: 60,
-    dispersion: 0.28,
-    notes: "Target 3% high-risk CLO equity income. Small weight only; distribution-cut risk screen is essential.",
-  },
-  {
-    rank: 18,
-    ticker: "PCEF",
-    name: "Invesco CEF Income Composite ETF",
-    sleeveFit: "Credit / CEF",
-    sector: "Credit / CEF ETF",
-    price: 0,
-    signalScore: 76,
-    upside: 0.08,
-    revisionScore: 74,
-    momentumScore: 64,
-    qualityScore: 76,
-    dispersion: 0.12,
-    notes: "Target 3% core CEF ETF and tactical recovery proxy when H0/H1 mean reversion fires.",
-  },
-  {
-    rank: 19,
-    ticker: "AGG",
-    name: "iShares Core U.S. Aggregate Bond ETF",
-    sleeveFit: "Tactical",
-    sector: "Investment Grade Bonds",
-    price: 0,
-    signalScore: 75,
-    upside: 0.04,
-    revisionScore: 90,
-    momentumScore: 58,
-    qualityScore: 92,
-    dispersion: 0.05,
-    notes: "Default tactical/defensive sleeve. H0 rotates 50% to AGG; H1 rotates 25% to AGG.",
-  },
-  {
-    rank: 20,
-    ticker: "BIZD",
-    name: "VanEck BDC Income ETF",
-    sleeveFit: "BDC / Private Credit",
-    sector: "BDC ETF / Benchmark",
-    price: 0,
-    signalScore: 74,
-    upside: 0.10,
-    revisionScore: 70,
-    momentumScore: 64,
-    qualityScore: 72,
-    dispersion: 0.16,
-    notes: "BDC benchmark / replacement candidate from blended benchmark. Use as sleeve bench, not default core holding unless it scores better than individual BDCs.",
-  },
+  { rank: 1, ticker: "EPD", name: "Enterprise Products Partners", role: "Current Core", sleeveFit: "Infrastructure", sector: "Midstream MLP", price: 0, signalScore: 91, upside: 0.075, revisionScore: 92, momentumScore: 74, qualityScore: 94, dispersion: 0.06, yieldRate: 0.07, discountNav: 0, coverage: 1.65, sixMonthReturn: 0.08, discountZ: 0, liquidityScore: 92, taxPocket: "Taxable only", notes: "Core MLP ballast; strong DCF coverage, investment-grade profile, K-1/UBTI makes taxable the preferred pocket." },
+  { rank: 2, ticker: "ARCC", name: "Ares Capital", role: "Current Core", sleeveFit: "BDC / Private Credit", sector: "BDC / Private Credit", price: 0, signalScore: 90, upside: 0.09, revisionScore: 88, momentumScore: 72, qualityScore: 90, dispersion: 0.10, yieldRate: 0.09, discountNav: 0.02, coverage: 1.12, sixMonthReturn: 0.05, discountZ: 0, liquidityScore: 94, taxPocket: "IRA / Roth preferred", notes: "Scale BDC anchor; monitor NAV trend, NII coverage, non-accruals, and premium/discount to NAV." },
+  { rank: 3, ticker: "MPLX", name: "MPLX LP", role: "Current Core", sleeveFit: "Infrastructure", sector: "Midstream MLP", price: 0, signalScore: 89, upside: 0.08, revisionScore: 88, momentumScore: 76, qualityScore: 88, dispersion: 0.08, yieldRate: 0.075, discountNav: 0, coverage: 1.55, sixMonthReturn: 0.09, discountZ: 0, liquidityScore: 90, taxPocket: "Taxable only", notes: "Core MLP; attractive yield and coverage, but monitor leverage and Marathon sponsor/control dynamics." },
+  { rank: 4, ticker: "MAIN", name: "Main Street Capital", role: "Current Core", sleeveFit: "BDC / Private Credit", sector: "BDC / Private Credit", price: 0, signalScore: 88, upside: 0.06, revisionScore: 91, momentumScore: 70, qualityScore: 94, dispersion: 0.08, yieldRate: 0.07, discountNav: 0.45, coverage: 1.08, sixMonthReturn: 0.06, discountZ: 0, liquidityScore: 88, taxPocket: "IRA / Roth preferred", notes: "Best-in-class BDC quality; valuation premium is the gating risk, so avoid adding aggressively at extreme NAV premium." },
+  { rank: 5, ticker: "BXSL", name: "Blackstone Secured Lending", role: "Challenger", sleeveFit: "BDC / Private Credit", sector: "BDC / Private Credit", price: 0, signalScore: 87, upside: 0.08, revisionScore: 86, momentumScore: 68, qualityScore: 90, dispersion: 0.10, yieldRate: 0.10, discountNav: 0.03, coverage: 1.10, sixMonthReturn: 0.04, discountZ: 0, liquidityScore: 86, taxPocket: "IRA / Roth preferred", notes: "Serious BDC challenger; first-lien orientation and sponsor quality make it a candidate for replacing weaker BDC exposure." },
+  { rank: 6, ticker: "DIVO", name: "Amplify CWP Enhanced Dividend Income ETF", role: "Current Core", sleeveFit: "Option-Income", sector: "Option-Income ETF", price: 0, signalScore: 86, upside: 0.055, revisionScore: 85, momentumScore: 70, qualityScore: 88, dispersion: 0.08, yieldRate: 0.045, discountNav: 0, coverage: 1.00, sixMonthReturn: 0.06, discountZ: 0, liquidityScore: 85, taxPocket: "IRA / Roth preferred", notes: "Preferred option-income core over full overwrite structures; better upside capture profile with selective calls." },
+  { rank: 7, ticker: "OBDC", name: "Blue Owl Capital Corporation", role: "Challenger", sleeveFit: "BDC / Private Credit", sector: "BDC / Private Credit", price: 0, signalScore: 85, upside: 0.10, revisionScore: 82, momentumScore: 66, qualityScore: 86, dispersion: 0.12, yieldRate: 0.10, discountNav: -0.02, coverage: 1.10, sixMonthReturn: 0.03, discountZ: -0.3, liquidityScore: 88, taxPocket: "IRA / Roth preferred", notes: "Large BDC candidate; compare NAV stability and non-accrual trend against ARCC/BXSL/TSLX." },
+  { rank: 8, ticker: "TSLX", name: "Sixth Street Specialty Lending", role: "Challenger", sleeveFit: "BDC / Private Credit", sector: "BDC / Private Credit", price: 0, signalScore: 84, upside: 0.085, revisionScore: 84, momentumScore: 66, qualityScore: 88, dispersion: 0.11, yieldRate: 0.09, discountNav: 0.12, coverage: 1.08, sixMonthReturn: 0.04, discountZ: 0, liquidityScore: 82, taxPocket: "IRA / Roth preferred", notes: "Underwriting-quality BDC challenger; watch valuation premium and portfolio concentration." },
+  { rank: 9, ticker: "OKE", name: "ONEOK", role: "Challenger", sleeveFit: "Infrastructure", sector: "Midstream C-Corp", price: 0, signalScore: 83, upside: 0.075, revisionScore: 82, momentumScore: 75, qualityScore: 84, dispersion: 0.10, yieldRate: 0.05, discountNav: 0, coverage: 1.40, sixMonthReturn: 0.07, discountZ: 0, liquidityScore: 93, taxPocket: "Either", notes: "C-corp midstream challenger; useful if avoiding additional K-1 exposure." },
+  { rank: 10, ticker: "ET", name: "Energy Transfer LP", role: "Current Core", sleeveFit: "Infrastructure", sector: "Midstream MLP", price: 0, signalScore: 83, upside: 0.08, revisionScore: 82, momentumScore: 74, qualityScore: 80, dispersion: 0.12, yieldRate: 0.08, discountNav: 0, coverage: 1.75, sixMonthReturn: 0.08, discountZ: 0, liquidityScore: 95, taxPocket: "Taxable only", notes: "Higher-yield MLP core; governance/leverage history keeps it below EPD/MPLX despite attractive cash yield." },
+  { rank: 11, ticker: "JEPI", name: "JPMorgan Equity Premium Income ETF", role: "Challenger", sleeveFit: "Option-Income", sector: "Option-Income ETF", price: 0, signalScore: 82, upside: 0.04, revisionScore: 82, momentumScore: 68, qualityScore: 86, dispersion: 0.08, yieldRate: 0.075, discountNav: 0, coverage: 1.00, sixMonthReturn: 0.04, discountZ: 0, liquidityScore: 96, taxPocket: "IRA / Roth preferred", notes: "Major option-income challenger; compare downside capture, upside capture, and ordinary-income tax drag versus DIVO/XYLD." },
+  { rank: 12, ticker: "PDI", name: "PIMCO Dynamic Income Fund", role: "Current Core", sleeveFit: "Credit / CEF", sector: "Multi-sector Credit CEF", price: 0, signalScore: 82, upside: 0.13, revisionScore: 72, momentumScore: 66, qualityScore: 78, dispersion: 0.18, yieldRate: 0.13, discountNav: -0.02, coverage: 0.95, sixMonthReturn: 0.03, discountZ: -0.5, liquidityScore: 84, taxPocket: "Taxable preferred", notes: "Core PIMCO credit CEF; monitor leverage cost, premium/discount z-score, coverage and UNII." },
+  { rank: 13, ticker: "SPYI", name: "NEOS S&P 500 High Income ETF", role: "Challenger", sleeveFit: "Option-Income", sector: "Option-Income ETF", price: 0, signalScore: 81, upside: 0.04, revisionScore: 80, momentumScore: 68, qualityScore: 84, dispersion: 0.09, yieldRate: 0.11, discountNav: 0, coverage: 1.00, sixMonthReturn: 0.05, discountZ: 0, liquidityScore: 78, taxPocket: "IRA / Roth preferred", notes: "High-income option ETF challenger; tax character and upside capture need verification before replacing DIVO/XYLD." },
+  { rank: 14, ticker: "PDO", name: "PIMCO Dynamic Income Opportunities Fund", role: "Challenger", sleeveFit: "Credit / CEF", sector: "Multi-sector Credit CEF", price: 0, signalScore: 80, upside: 0.12, revisionScore: 74, momentumScore: 64, qualityScore: 80, dispersion: 0.16, yieldRate: 0.12, discountNav: -0.07, coverage: 1.00, sixMonthReturn: 0.02, discountZ: -1.0, liquidityScore: 76, taxPocket: "Taxable preferred", notes: "PIMCO challenger; discount/premium discipline may make it more attractive than richer PIMCO peers at times." },
+  { rank: 15, ticker: "WMB", name: "Williams Companies", role: "Current Core", sleeveFit: "Infrastructure", sector: "Midstream C-Corp", price: 0, signalScore: 80, upside: 0.05, revisionScore: 84, momentumScore: 76, qualityScore: 86, dispersion: 0.08, yieldRate: 0.045, discountNav: 0, coverage: 1.55, sixMonthReturn: 0.08, discountZ: 0, liquidityScore: 96, taxPocket: "Either", notes: "Clean C-corp midstream exposure; lower K-1 complexity and strong infrastructure role." },
+  { rank: 16, ticker: "HTGC", name: "Hercules Capital", role: "Current Core", sleeveFit: "BDC / Private Credit", sector: "Venture Lending BDC", price: 0, signalScore: 80, upside: 0.10, revisionScore: 78, momentumScore: 74, qualityScore: 80, dispersion: 0.13, yieldRate: 0.10, discountNav: 0.20, coverage: 1.05, sixMonthReturn: 0.05, discountZ: 0, liquidityScore: 82, taxPocket: "IRA / Roth preferred", notes: "Venture credit BDC; higher cycle sensitivity, so cap position size and watch NAV/non-accruals." },
+  { rank: 17, ticker: "PAXS", name: "PIMCO Access Income Fund", role: "Challenger", sleeveFit: "Credit / CEF", sector: "Multi-sector Credit CEF", price: 0, signalScore: 79, upside: 0.12, revisionScore: 74, momentumScore: 64, qualityScore: 78, dispersion: 0.17, yieldRate: 0.12, discountNav: -0.09, coverage: 1.00, sixMonthReturn: 0.02, discountZ: -1.1, liquidityScore: 70, taxPocket: "Taxable preferred", notes: "Discount-sensitive PIMCO challenger; smaller/liquidity profile requires execution discipline." },
+  { rank: 18, ticker: "UTG", name: "Reaves Utility Income Fund", role: "Current Core", sleeveFit: "Infrastructure", sector: "Utility / Infrastructure CEF", price: 0, signalScore: 79, upside: 0.08, revisionScore: 82, momentumScore: 62, qualityScore: 84, dispersion: 0.13, yieldRate: 0.08, discountNav: -0.08, coverage: 1.00, sixMonthReturn: 0.02, discountZ: -0.8, liquidityScore: 72, taxPocket: "Taxable preferred", notes: "Infrastructure/utility CEF; evaluate discount z-score and coverage rather than yield alone." },
+  { rank: 19, ticker: "CSWC", name: "Capital Southwest", role: "Current Core", sleeveFit: "BDC / Private Credit", sector: "BDC / Private Credit", price: 0, signalScore: 78, upside: 0.09, revisionScore: 76, momentumScore: 68, qualityScore: 78, dispersion: 0.14, yieldRate: 0.10, discountNav: 0.30, coverage: 1.05, sixMonthReturn: 0.04, discountZ: 0, liquidityScore: 70, taxPocket: "IRA / Roth preferred", notes: "Higher-beta BDC; smaller-cap and premium-to-NAV risk justify smaller target weight." },
+  { rank: 20, ticker: "PTY", name: "PIMCO Corporate & Income Opportunity Fund", role: "Current Core", sleeveFit: "Credit / CEF", sector: "Multi-sector Credit CEF", price: 0, signalScore: 78, upside: 0.10, revisionScore: 70, momentumScore: 66, qualityScore: 78, dispersion: 0.20, yieldRate: 0.10, discountNav: 0.05, coverage: 0.95, sixMonthReturn: 0.03, discountZ: 0.3, liquidityScore: 80, taxPocket: "Taxable preferred", notes: "PIMCO credit CEF; sponsor strength but premium/discount discipline is critical." },
+  { rank: 21, ticker: "KMI", name: "Kinder Morgan", role: "Challenger", sleeveFit: "Infrastructure", sector: "Midstream C-Corp", price: 0, signalScore: 77, upside: 0.06, revisionScore: 78, momentumScore: 72, qualityScore: 82, dispersion: 0.09, yieldRate: 0.045, discountNav: 0, coverage: 1.60, sixMonthReturn: 0.06, discountZ: 0, liquidityScore: 94, taxPocket: "Either", notes: "C-corp midstream alternative; lower yield than MLPs but simpler tax form." },
+  { rank: 22, ticker: "ENB", name: "Enbridge", role: "Challenger", sleeveFit: "Infrastructure", sector: "Midstream C-Corp", price: 0, signalScore: 77, upside: 0.06, revisionScore: 78, momentumScore: 68, qualityScore: 82, dispersion: 0.10, yieldRate: 0.06, discountNav: 0, coverage: 1.45, sixMonthReturn: 0.04, discountZ: 0, liquidityScore: 90, taxPocket: "Taxable / either", notes: "Large pipeline utility-like candidate; FX/withholding and Canadian tax treatment require review." },
+  { rank: 23, ticker: "JEPQ", name: "JPMorgan Nasdaq Equity Premium Income ETF", role: "Challenger", sleeveFit: "Option-Income", sector: "Option-Income ETF", price: 0, signalScore: 77, upside: 0.06, revisionScore: 78, momentumScore: 72, qualityScore: 78, dispersion: 0.10, yieldRate: 0.09, discountNav: 0, coverage: 1.00, sixMonthReturn: 0.07, discountZ: 0, liquidityScore: 94, taxPocket: "IRA / Roth preferred", notes: "Higher-growth option sleeve candidate; Nasdaq beta means it is not a direct DIVO/XYLD substitute." },
+  { rank: 24, ticker: "ARDC", name: "Ares Dynamic Credit Allocation Fund", role: "Challenger", sleeveFit: "Credit / CEF", sector: "Credit CEF", price: 0, signalScore: 76, upside: 0.10, revisionScore: 72, momentumScore: 62, qualityScore: 78, dispersion: 0.14, yieldRate: 0.10, discountNav: -0.10, coverage: 1.00, sixMonthReturn: 0.01, discountZ: -1.0, liquidityScore: 68, taxPocket: "Taxable preferred", notes: "Ares credit CEF challenger; attractive only if discount and coverage compensate for credit beta." },
+  { rank: 25, ticker: "GBDC", name: "Golub Capital BDC", role: "Current Core", sleeveFit: "BDC / Private Credit", sector: "BDC / Private Credit", price: 0, signalScore: 76, upside: 0.10, revisionScore: 74, momentumScore: 62, qualityScore: 78, dispersion: 0.12, yieldRate: 0.10, discountNav: -0.03, coverage: 1.07, sixMonthReturn: 0.02, discountZ: 0, liquidityScore: 72, taxPocket: "IRA / Roth preferred", notes: "Conservative BDC candidate/core; lower beta but not automatically superior if NAV growth lags." },
+  { rank: 26, ticker: "GPIX", name: "Goldman Sachs S&P 500 Core Premium Income ETF", role: "Challenger", sleeveFit: "Option-Income", sector: "Option-Income ETF", price: 0, signalScore: 76, upside: 0.04, revisionScore: 76, momentumScore: 66, qualityScore: 82, dispersion: 0.09, yieldRate: 0.07, discountNav: 0, coverage: 1.00, sixMonthReturn: 0.04, discountZ: 0, liquidityScore: 72, taxPocket: "IRA / Roth preferred", notes: "Option-income challenger; compare AUM/liquidity and upside capture to JEPI/SPYI/DIVO." },
+  { rank: 27, ticker: "DSL", name: "DoubleLine Income Solutions Fund", role: "Current Core", sleeveFit: "Credit / CEF", sector: "Credit CEF", price: 0, signalScore: 75, upside: 0.11, revisionScore: 70, momentumScore: 62, qualityScore: 76, dispersion: 0.17, yieldRate: 0.11, discountNav: -0.09, coverage: 0.95, sixMonthReturn: 0.01, discountZ: -0.7, liquidityScore: 74, taxPocket: "Taxable preferred", notes: "Discount-capture credit CEF; distribution coverage and credit quality decide whether it remains core." },
+  { rank: 28, ticker: "FSK", name: "FS KKR Capital", role: "Challenger", sleeveFit: "BDC / Private Credit", sector: "BDC / Private Credit", price: 0, signalScore: 75, upside: 0.12, revisionScore: 70, momentumScore: 60, qualityScore: 72, dispersion: 0.16, yieldRate: 0.12, discountNav: -0.12, coverage: 1.10, sixMonthReturn: 0.01, discountZ: -0.4, liquidityScore: 86, taxPocket: "IRA / Roth preferred", notes: "High-yield discounted BDC; value opportunity only if credit/NAV trend stabilizes." },
+  { rank: 29, ticker: "QYLD", name: "Global X Nasdaq 100 Covered Call ETF", role: "Watchlist", sleeveFit: "Option-Income", sector: "Option-Income ETF", price: 0, signalScore: 74, upside: 0.04, revisionScore: 70, momentumScore: 66, qualityScore: 72, dispersion: 0.12, yieldRate: 0.11, discountNav: 0, coverage: 1.00, sixMonthReturn: 0.04, discountZ: 0, liquidityScore: 92, taxPocket: "IRA / Roth preferred", notes: "High distribution but full overwrite risk; likely watchlist unless income objective dominates total return." },
+  { rank: 30, ticker: "HYT", name: "BlackRock Corporate High Yield Fund", role: "Challenger", sleeveFit: "Credit / CEF", sector: "High Yield CEF", price: 0, signalScore: 74, upside: 0.09, revisionScore: 70, momentumScore: 62, qualityScore: 76, dispersion: 0.15, yieldRate: 0.09, discountNav: -0.08, coverage: 1.00, sixMonthReturn: 0.02, discountZ: -0.8, liquidityScore: 76, taxPocket: "Taxable preferred", notes: "High-yield CEF candidate; spread regime and discount z-score should drive add/replace decision." },
+  { rank: 31, ticker: "HESM", name: "Hess Midstream", role: "Challenger", sleeveFit: "Infrastructure", sector: "Midstream C-Corp", price: 0, signalScore: 73, upside: 0.07, revisionScore: 76, momentumScore: 70, qualityScore: 74, dispersion: 0.12, yieldRate: 0.08, discountNav: 0, coverage: 1.35, sixMonthReturn: 0.04, discountZ: 0, liquidityScore: 72, taxPocket: "Either", notes: "High-yield midstream challenger; sponsor/asset concentration and liquidity require position-size discipline." },
+  { rank: 32, ticker: "WES", name: "Western Midstream Partners", role: "Challenger", sleeveFit: "Infrastructure", sector: "Midstream MLP", price: 0, signalScore: 73, upside: 0.08, revisionScore: 74, momentumScore: 70, qualityScore: 74, dispersion: 0.13, yieldRate: 0.09, discountNav: 0, coverage: 1.35, sixMonthReturn: 0.05, discountZ: 0, liquidityScore: 74, taxPocket: "Taxable only", notes: "High-yield MLP challenger; must clear tax complexity and sponsor concentration hurdle." },
+  { rank: 33, ticker: "QQQI", name: "NEOS Nasdaq 100 High Income ETF", role: "Challenger", sleeveFit: "Option-Income", sector: "Option-Income ETF", price: 0, signalScore: 73, upside: 0.06, revisionScore: 72, momentumScore: 70, qualityScore: 72, dispersion: 0.12, yieldRate: 0.12, discountNav: 0, coverage: 1.00, sixMonthReturn: 0.06, discountZ: 0, liquidityScore: 70, taxPocket: "IRA / Roth preferred", notes: "High-income Nasdaq option candidate; requires upside-capture and tax-character review." },
+  { rank: 34, ticker: "BGT", name: "BlackRock Floating Rate Income Trust", role: "Current Core", sleeveFit: "Credit / CEF", sector: "Floating-Rate Loan CEF", price: 0, signalScore: 73, upside: 0.09, revisionScore: 72, momentumScore: 64, qualityScore: 76, dispersion: 0.14, yieldRate: 0.09, discountNav: -0.07, coverage: 1.00, sixMonthReturn: 0.02, discountZ: -0.5, liquidityScore: 66, taxPocket: "Taxable preferred", notes: "Floating-rate CEF; rate regime and loan-credit quality determine whether it remains core." },
+  { rank: 35, ticker: "BGB", name: "Blackstone Strategic Credit Fund", role: "Challenger", sleeveFit: "Credit / CEF", sector: "Credit CEF", price: 0, signalScore: 72, upside: 0.09, revisionScore: 70, momentumScore: 62, qualityScore: 74, dispersion: 0.15, yieldRate: 0.09, discountNav: -0.10, coverage: 1.00, sixMonthReturn: 0.01, discountZ: -0.9, liquidityScore: 64, taxPocket: "Taxable preferred", notes: "Credit CEF challenger; discount depth must compensate for liquidity and leverage-cost risk." },
+  { rank: 36, ticker: "BIT", name: "BlackRock Multi-Sector Income Trust", role: "Challenger", sleeveFit: "Credit / CEF", sector: "Multi-sector Credit CEF", price: 0, signalScore: 72, upside: 0.09, revisionScore: 70, momentumScore: 62, qualityScore: 74, dispersion: 0.15, yieldRate: 0.09, discountNav: -0.09, coverage: 1.00, sixMonthReturn: 0.01, discountZ: -0.8, liquidityScore: 66, taxPocket: "Taxable preferred", notes: "Multi-sector credit CEF challenger; use discount z-score and NAV total return to avoid yield trap." },
+  { rank: 37, ticker: "AM", name: "Antero Midstream", role: "Watchlist", sleeveFit: "Infrastructure", sector: "Midstream C-Corp", price: 0, signalScore: 72, upside: 0.07, revisionScore: 72, momentumScore: 70, qualityScore: 72, dispersion: 0.13, yieldRate: 0.06, discountNav: 0, coverage: 1.35, sixMonthReturn: 0.05, discountZ: 0, liquidityScore: 76, taxPocket: "Either", notes: "Higher-beta gas midstream; watchlist unless valuation and balance-sheet trend justify add." },
+  { rank: 38, ticker: "KBDC", name: "Kayne Anderson BDC", role: "Challenger", sleeveFit: "BDC / Private Credit", sector: "BDC / Private Credit", price: 0, signalScore: 72, upside: 0.10, revisionScore: 70, momentumScore: 60, qualityScore: 72, dispersion: 0.15, yieldRate: 0.10, discountNav: -0.05, coverage: 1.05, sixMonthReturn: 0.01, discountZ: -0.3, liquidityScore: 55, taxPocket: "IRA / Roth preferred", notes: "Newer/smaller BDC candidate; requires extra scrutiny on liquidity and operating history." },
+  { rank: 39, ticker: "XYLD", name: "Global X S&P 500 Covered Call ETF", role: "Current Core", sleeveFit: "Option-Income", sector: "Option-Income ETF", price: 0, signalScore: 71, upside: 0.04, revisionScore: 70, momentumScore: 60, qualityScore: 74, dispersion: 0.12, yieldRate: 0.10, discountNav: 0, coverage: 1.00, sixMonthReturn: 0.03, discountZ: 0, liquidityScore: 90, taxPocket: "IRA / Roth preferred", notes: "Original option-income core; full overwrite can cap upside, so compare against DIVO/JEPI/SPYI." },
+  { rank: 40, ticker: "BIPC", name: "Brookfield Infrastructure Corporation", role: "Challenger", sleeveFit: "Infrastructure", sector: "Infrastructure C-Corp", price: 0, signalScore: 71, upside: 0.08, revisionScore: 70, momentumScore: 60, qualityScore: 78, dispersion: 0.15, yieldRate: 0.05, discountNav: 0, coverage: 1.20, sixMonthReturn: 0.00, discountZ: 0, liquidityScore: 70, taxPocket: "Either", notes: "Global infrastructure challenger; balance sheet, rates, and structure complexity require review." },
+  { rank: 41, ticker: "GPIQ", name: "Goldman Sachs Nasdaq 100 Core Premium Income ETF", role: "Challenger", sleeveFit: "Option-Income", sector: "Option-Income ETF", price: 0, signalScore: 70, upside: 0.05, revisionScore: 70, momentumScore: 68, qualityScore: 72, dispersion: 0.12, yieldRate: 0.09, discountNav: 0, coverage: 1.00, sixMonthReturn: 0.05, discountZ: 0, liquidityScore: 62, taxPocket: "IRA / Roth preferred", notes: "Nasdaq option-income challenger; liquidity and upside capture must be compared to JEPQ/QQQI." },
+  { rank: 42, ticker: "RQI", name: "Cohen & Steers Quality Income Realty Fund", role: "Challenger", sleeveFit: "Credit / CEF", sector: "REIT CEF", price: 0, signalScore: 70, upside: 0.10, revisionScore: 68, momentumScore: 58, qualityScore: 74, dispersion: 0.16, yieldRate: 0.08, discountNav: -0.10, coverage: 1.00, sixMonthReturn: 0.00, discountZ: -0.8, liquidityScore: 76, taxPocket: "Taxable preferred", notes: "REIT CEF diversifier; rate sensitivity makes it a regime-dependent challenger." },
+  { rank: 43, ticker: "PCEF", name: "Invesco CEF Income Composite ETF", role: "Sleeve Benchmark", sleeveFit: "Credit / CEF", sector: "CEF ETF / Tactical Proxy", price: 0, signalScore: 70, upside: 0.08, revisionScore: 74, momentumScore: 64, qualityScore: 76, dispersion: 0.12, yieldRate: 0.085, discountNav: 0, coverage: 1.00, sixMonthReturn: 0.02, discountZ: 0, liquidityScore: 88, taxPocket: "Taxable preferred", notes: "CEF benchmark and tactical mean-reversion proxy; not automatically a best core holding." },
+  { rank: 44, ticker: "UTF", name: "Cohen & Steers Infrastructure Fund", role: "Challenger", sleeveFit: "Credit / CEF", sector: "Infrastructure CEF", price: 0, signalScore: 70, upside: 0.08, revisionScore: 70, momentumScore: 60, qualityScore: 76, dispersion: 0.14, yieldRate: 0.08, discountNav: -0.08, coverage: 1.00, sixMonthReturn: 0.01, discountZ: -0.7, liquidityScore: 72, taxPocket: "Taxable preferred", notes: "Infrastructure CEF challenger to UTG; compare NAV total return, leverage, and discount." },
+  { rank: 45, ticker: "FDUS", name: "Fidus Investment", role: "Watchlist", sleeveFit: "BDC / Private Credit", sector: "BDC / Private Credit", price: 0, signalScore: 69, upside: 0.10, revisionScore: 68, momentumScore: 58, qualityScore: 70, dispersion: 0.15, yieldRate: 0.11, discountNav: -0.05, coverage: 1.05, sixMonthReturn: 0.00, discountZ: -0.4, liquidityScore: 48, taxPocket: "IRA / Roth preferred", notes: "Smaller BDC watchlist; liquidity and underwriting history need more review before core inclusion." },
+  { rank: 46, ticker: "FPF", name: "First Trust Intermediate Duration Preferred & Income Fund", role: "Challenger", sleeveFit: "Credit / CEF", sector: "Preferred CEF", price: 0, signalScore: 69, upside: 0.08, revisionScore: 68, momentumScore: 58, qualityScore: 72, dispersion: 0.14, yieldRate: 0.085, discountNav: -0.09, coverage: 1.00, sixMonthReturn: 0.00, discountZ: -0.7, liquidityScore: 66, taxPocket: "Taxable preferred", notes: "Preferred CEF diversifier; watch duration, financial-sector concentration, and leverage cost." },
+  { rank: 47, ticker: "TRIN", name: "Trinity Capital", role: "Watchlist", sleeveFit: "BDC / Private Credit", sector: "Venture Lending BDC", price: 0, signalScore: 68, upside: 0.12, revisionScore: 64, momentumScore: 62, qualityScore: 66, dispersion: 0.18, yieldRate: 0.13, discountNav: -0.08, coverage: 1.00, sixMonthReturn: 0.02, discountZ: -0.4, liquidityScore: 62, taxPocket: "IRA / Roth preferred", notes: "High-yield venture BDC; watchlist unless NAV/non-accrual data justify risk." },
+  { rank: 48, ticker: "RNP", name: "Cohen & Steers REIT & Preferred Income Fund", role: "Challenger", sleeveFit: "Credit / CEF", sector: "REIT / Preferred CEF", price: 0, signalScore: 68, upside: 0.08, revisionScore: 66, momentumScore: 56, qualityScore: 72, dispersion: 0.15, yieldRate: 0.08, discountNav: -0.10, coverage: 1.00, sixMonthReturn: -0.01, discountZ: -0.8, liquidityScore: 64, taxPocket: "Taxable preferred", notes: "Hybrid REIT/preferred CEF; useful diversifier if rate regime stabilizes." },
+  { rank: 49, ticker: "RYLD", name: "Global X Russell 2000 Covered Call ETF", role: "Watchlist", sleeveFit: "Option-Income", sector: "Option-Income ETF", price: 0, signalScore: 67, upside: 0.06, revisionScore: 64, momentumScore: 60, qualityScore: 66, dispersion: 0.16, yieldRate: 0.12, discountNav: 0, coverage: 1.00, sixMonthReturn: 0.02, discountZ: 0, liquidityScore: 76, taxPocket: "IRA / Roth preferred", notes: "Small-cap overwrite; higher distribution but lower quality and tougher long-term total-return profile." },
+  { rank: 50, ticker: "ETV", name: "Eaton Vance Tax-Managed Buy-Write Opportunities Fund", role: "Challenger", sleeveFit: "Option-Income", sector: "Option CEF", price: 0, signalScore: 67, upside: 0.06, revisionScore: 66, momentumScore: 58, qualityScore: 70, dispersion: 0.15, yieldRate: 0.085, discountNav: -0.08, coverage: 1.00, sixMonthReturn: 0.00, discountZ: -0.7, liquidityScore: 70, taxPocket: "Taxable preferred", notes: "Tax-managed option CEF; compare against ETF option-income sleeve for tax and discount behavior." },
+  { rank: 51, ticker: "BCSF", name: "Bain Capital Specialty Finance", role: "Watchlist", sleeveFit: "BDC / Private Credit", sector: "BDC / Private Credit", price: 0, signalScore: 66, upside: 0.11, revisionScore: 64, momentumScore: 56, qualityScore: 66, dispersion: 0.18, yieldRate: 0.11, discountNav: -0.08, coverage: 1.05, sixMonthReturn: 0.00, discountZ: -0.5, liquidityScore: 58, taxPocket: "IRA / Roth preferred", notes: "Discounted BDC watchlist; needs stronger evidence on NAV and credit quality before core role." },
+  { rank: 52, ticker: "CGBD", name: "Carlyle Secured Lending", role: "Watchlist", sleeveFit: "BDC / Private Credit", sector: "BDC / Private Credit", price: 0, signalScore: 66, upside: 0.12, revisionScore: 64, momentumScore: 56, qualityScore: 66, dispersion: 0.18, yieldRate: 0.11, discountNav: -0.10, coverage: 1.05, sixMonthReturn: 0.00, discountZ: -0.5, liquidityScore: 55, taxPocket: "IRA / Roth preferred", notes: "High-yield BDC watchlist; require evidence discount is not signaling credit deterioration." },
+  { rank: 53, ticker: "JPI", name: "Nuveen Preferred & Income Term Fund", role: "Challenger", sleeveFit: "Credit / CEF", sector: "Preferred CEF", price: 0, signalScore: 66, upside: 0.07, revisionScore: 66, momentumScore: 56, qualityScore: 70, dispersion: 0.14, yieldRate: 0.075, discountNav: -0.08, coverage: 1.00, sixMonthReturn: -0.01, discountZ: -0.7, liquidityScore: 60, taxPocket: "Taxable preferred", notes: "Preferred CEF candidate; rate-sensitive and should be benchmarked against FPF/JPS." },
+  { rank: 54, ticker: "BIZD", name: "VanEck BDC Income ETF", role: "Sleeve Benchmark", sleeveFit: "BDC / Private Credit", sector: "BDC ETF / Benchmark", price: 0, signalScore: 65, upside: 0.10, revisionScore: 70, momentumScore: 64, qualityScore: 72, dispersion: 0.16, yieldRate: 0.10, discountNav: 0, coverage: 1.00, sixMonthReturn: 0.02, discountZ: 0, liquidityScore: 86, taxPocket: "IRA / Roth preferred", notes: "BDC sleeve benchmark; use for comparison or broad exposure, not automatically superior to ARCC/BXSL/MAIN." },
+  { rank: 55, ticker: "EOS", name: "Eaton Vance Enhanced Equity Income Fund II", role: "Challenger", sleeveFit: "Option-Income", sector: "Option CEF", price: 0, signalScore: 65, upside: 0.06, revisionScore: 64, momentumScore: 58, qualityScore: 68, dispersion: 0.15, yieldRate: 0.08, discountNav: -0.07, coverage: 1.00, sixMonthReturn: 0.00, discountZ: -0.6, liquidityScore: 66, taxPocket: "Taxable preferred", notes: "Option CEF candidate; compare tax-managed distribution and discount behavior against ETV." },
+  { rank: 56, ticker: "ECC", name: "Eagle Point Credit Company", role: "Current Core", sleeveFit: "Credit / CEF", sector: "CLO Equity CEF", price: 0, signalScore: 62, upside: 0.16, revisionScore: 55, momentumScore: 58, qualityScore: 58, dispersion: 0.28, yieldRate: 0.17, discountNav: 0.00, coverage: 0.90, sixMonthReturn: 0.00, discountZ: 0, liquidityScore: 64, taxPocket: "Taxable preferred", notes: "High-risk CLO equity income; keep small and consider separate risk bucket versus normal credit CEFs." },
+  { rank: 57, ticker: "AGG", name: "iShares Core U.S. Aggregate Bond ETF", role: "Tactical", sleeveFit: "Tactical", sector: "Investment Grade Bonds", price: 0, signalScore: 80, upside: 0.04, revisionScore: 90, momentumScore: 58, qualityScore: 92, dispersion: 0.05, yieldRate: 0.04, discountNav: 0, coverage: 1.00, sixMonthReturn: 0.00, discountZ: 0, liquidityScore: 98, taxPocket: "Tactical sleeve", notes: "Default defensive rotation instrument in the TITAN rulebook; H0 rotates 50% and H1 rotates 25% to AGG." },
+  { rank: 58, ticker: "BSV", name: "Vanguard Short-Term Bond ETF", role: "Tactical", sleeveFit: "Tactical", sector: "Short-Term Bonds", price: 0, signalScore: 76, upside: 0.035, revisionScore: 88, momentumScore: 55, qualityScore: 92, dispersion: 0.04, yieldRate: 0.04, discountNav: 0, coverage: 1.00, sixMonthReturn: 0.00, discountZ: 0, liquidityScore: 96, taxPocket: "Tactical sleeve", notes: "Shorter-duration defensive alternative; test against AGG for drawdown mitigation versus recovery participation." },
+  { rank: 59, ticker: "SGOV", name: "iShares 0-3 Month Treasury Bond ETF", role: "Tactical", sleeveFit: "Tactical", sector: "T-Bills", price: 0, signalScore: 75, upside: 0.04, revisionScore: 90, momentumScore: 50, qualityScore: 95, dispersion: 0.02, yieldRate: 0.04, discountNav: 0, coverage: 1.00, sixMonthReturn: 0.00, discountZ: 0, liquidityScore: 98, taxPocket: "Tactical sleeve", notes: "Cash-like defensive instrument; useful if rate shock or margin-risk conditions argue for lower duration than AGG." },
+  { rank: 60, ticker: "MUB", name: "iShares National Muni Bond ETF", role: "Tactical", sleeveFit: "Tactical", sector: "Municipal Bonds", price: 0, signalScore: 74, upside: 0.035, revisionScore: 88, momentumScore: 52, qualityScore: 90, dispersion: 0.04, yieldRate: 0.035, discountNav: 0, coverage: 1.00, sixMonthReturn: 0.00, discountZ: 0, liquidityScore: 94, taxPocket: "Taxable tactical", notes: "Taxable-account defensive alternative; test after-tax versus AGG if TITAN is implemented in taxable capital." },
 ] as Omit<BenchCandidate, keyof typeof DEFAULT_TA_FIELDS>[]).map((candidate) => ({
   ...DEFAULT_TA_FIELDS,
   ...candidate,
@@ -640,6 +420,7 @@ const blankBenchCandidate = (rank: number): BenchCandidate => ({
   rank,
   ticker: "",
   name: "",
+  ...DEFAULT_INCOME_FIELDS,
   sleeveFit: "Infrastructure",
   sector: "",
   price: 0,
@@ -781,6 +562,12 @@ function calculateTitanSignalScore(input: {
   momentumScore: number;
   qualityScore: number;
   dispersion: number;
+  yieldRate?: number;
+  discountNav?: number;
+  coverage?: number;
+  sixMonthReturn?: number;
+  discountZ?: number;
+  liquidityScore?: number;
   price?: number;
   buyZoneLow?: number;
   buyZoneHigh?: number;
@@ -791,19 +578,44 @@ function calculateTitanSignalScore(input: {
   above200dma?: boolean;
   technicalExtension?: number;
 }): number {
-  const yieldScore = incomeYieldToScore(input.upside);
-  const distributionSafetyScore = clampNumber(input.revisionScore, 0, 100);
-  const momentumScore = clampNumber(input.momentumScore, 0, 100);
+  const yieldInput = typeof input.yieldRate === "number" ? input.yieldRate : input.upside;
+  const yieldScore = incomeYieldToScore(yieldInput);
+  const coverageScore =
+    typeof input.coverage === "number" && Number.isFinite(input.coverage)
+      ? clampNumber((input.coverage - 0.8) / 0.5 * 100, 0, 100)
+      : clampNumber(input.revisionScore, 0, 100);
+  const distributionSafetyScore = clampNumber((input.revisionScore * 0.55) + (coverageScore * 0.45), 0, 100);
+  const sixMonthScore =
+    typeof input.sixMonthReturn === "number" && Number.isFinite(input.sixMonthReturn)
+      ? clampNumber(50 + input.sixMonthReturn * 250, 0, 100)
+      : clampNumber(input.momentumScore, 0, 100);
+  const momentumScore = clampNumber((input.momentumScore * 0.65) + (sixMonthScore * 0.35), 0, 100);
   const qualityScore = clampNumber(input.qualityScore, 0, 100);
-  const discountRiskScore = dispersionToScore(input.dispersion);
+  const valuationScore =
+    typeof input.discountNav === "number" && input.discountNav < 0
+      ? clampNumber(60 + Math.abs(input.discountNav) * 250, 0, 100)
+      : typeof input.discountNav === "number" && input.discountNav > 0.2
+        ? clampNumber(80 - input.discountNav * 100, 20, 80)
+        : dispersionToScore(input.dispersion);
+  const zScoreBonus =
+    typeof input.discountZ === "number" && input.discountZ <= -1.5
+      ? 8
+      : typeof input.discountZ === "number" && input.discountZ <= -1.0
+        ? 5
+        : typeof input.discountZ === "number" && input.discountZ >= 1.0
+          ? -5
+          : 0;
+  const liquidityScore = typeof input.liquidityScore === "number" ? clampNumber(input.liquidityScore, 0, 100) : 75;
   const technicalScore = calculateTechnicalSetupScore(input);
   const score =
-    yieldScore * 0.25 +
-    distributionSafetyScore * 0.25 +
-    momentumScore * 0.15 +
-    qualityScore * 0.2 +
-    discountRiskScore * 0.05 +
-    technicalScore * 0.1;
+    yieldScore * 0.18 +
+    distributionSafetyScore * 0.22 +
+    momentumScore * 0.14 +
+    qualityScore * 0.18 +
+    valuationScore * 0.12 +
+    liquidityScore * 0.06 +
+    technicalScore * 0.1 +
+    zScoreBonus;
   return roundNumber(clampNumber(score, 0, 100), 0);
 }
 
@@ -959,13 +771,13 @@ function titanAssetLocation(tickerInput: string, sleeve: Sleeve): { pocket: stri
   if (["MPLX", "EPD", "ET"].includes(ticker)) {
     return { pocket: "Taxable only", rationale: "Direct MLP / K-1; avoid IRA UBTI complexity." };
   }
-  if (["ARCC", "MAIN", "HTGC", "GBDC", "CSWC", "BIZD"].includes(ticker) || sleeve === "BDC / Private Credit") {
+  if (["ARCC", "MAIN", "HTGC", "GBDC", "CSWC", "BXSL", "OBDC", "TSLX", "FSK", "BCSF", "CGBD", "KBDC", "FDUS", "TRIN", "BIZD"].includes(ticker) || sleeve === "BDC / Private Credit") {
     return { pocket: "IRA / Roth preferred", rationale: "BDC income is generally ordinary-income heavy." };
   }
-  if (["XYLD", "DIVO"].includes(ticker) || sleeve === "Option-Income") {
+  if (["XYLD", "DIVO", "JEPI", "JEPQ", "SPYI", "QQQI", "GPIX", "GPIQ", "RYLD", "QYLD", "ETV", "EOS"].includes(ticker) || sleeve === "Option-Income") {
     return { pocket: "IRA / Roth preferred", rationale: "Option-income distributions can be ordinary-income heavy." };
   }
-  if (["UTG", "PDI", "PTY", "DSL", "BGT", "ECC", "PCEF"].includes(ticker) || sleeve === "Credit / CEF") {
+  if (["UTG", "PDI", "PTY", "DSL", "BGT", "ECC", "PCEF", "PDO", "PAXS", "ARDC", "HYT", "BIT", "BGB", "FPF", "JPI", "RQI", "UTF"].includes(ticker) || sleeve === "Credit / CEF") {
     return { pocket: "Taxable preferred", rationale: "CEF ROC can defer tax through basis reduction; monitor discounts and coverage." };
   }
   if (ticker === "WMB") {
@@ -1122,7 +934,27 @@ export default function TitanDashboard() {
 
       if (savedHoldings) setHoldings(JSON.parse(savedHoldings) as Holding[]);
       if (savedBench)
-        setBenchCandidates(JSON.parse(savedBench) as BenchCandidate[]);
+        setBenchCandidates(
+          (JSON.parse(savedBench) as Partial<BenchCandidate>[]).map((candidate, index) => ({
+            ...DEFAULT_INCOME_FIELDS,
+            ...DEFAULT_TA_FIELDS,
+            ...candidate,
+            rank: typeof candidate.rank === "number" ? candidate.rank : index + 1,
+            role: (candidate.role as BenchRole) ?? "Challenger",
+            ticker: candidate.ticker ?? "",
+            name: candidate.name ?? "",
+            sleeveFit: (candidate.sleeveFit as Sleeve) ?? "Infrastructure",
+            sector: candidate.sector ?? "",
+            price: candidate.price ?? 0,
+            signalScore: candidate.signalScore ?? 0,
+            upside: candidate.upside ?? candidate.yieldRate ?? 0,
+            revisionScore: candidate.revisionScore ?? 0,
+            momentumScore: candidate.momentumScore ?? 0,
+            qualityScore: candidate.qualityScore ?? 0,
+            dispersion: candidate.dispersion ?? 0,
+            notes: candidate.notes ?? "",
+          })) as BenchCandidate[],
+        );
       if (savedCalls) setOpenCalls(JSON.parse(savedCalls) as CoveredCall[]);
       if (savedSettings) {
         const s = JSON.parse(savedSettings) as {
@@ -1203,7 +1035,7 @@ export default function TitanDashboard() {
     ]
       .map(normalizeTicker)
       .filter(Boolean);
-    return Array.from(new Set(symbols)).join(",");
+    return Array.from(new Set(symbols)).slice(0, 80).join(",");
   }, [benchCandidates, holdings, openCalls]);
 
   const optionSymbols = useMemo(() => {
@@ -1220,7 +1052,7 @@ export default function TitanDashboard() {
     ]
       .map(normalizeTicker)
       .filter(Boolean);
-    return Array.from(new Set(symbols)).slice(0, 30).join(",");
+    return Array.from(new Set(symbols)).slice(0, 60).join(",");
   }, [benchCandidates, holdings]);
 
   async function refreshLiveMarketData() {
@@ -1606,7 +1438,7 @@ export default function TitanDashboard() {
   function resetBenchToDefault() {
     if (
       window.confirm(
-        "Reset the TITAN Bench to the default 20-position candidate list? This will overwrite manual bench edits in this browser.",
+        "Reset the TITAN Bench to the default 60-position candidate universe? This will overwrite manual bench edits in this browser.",
       )
     ) {
       setBenchCandidates(DEFAULT_BENCH);
@@ -2377,7 +2209,7 @@ export default function TitanDashboard() {
                     Bench / Top Candidate Pool
                   </h3>
                   <p className="mt-2 text-sm text-[#344054]">
-                    Clean candidate view. Add or edit potential positions, then use the locked outputs — live price, buy zone, trim zone, and combined TITAN Score — to prioritize adds and promotions.
+                    Expanded TITAN candidate universe. The first 20 ranks are the current Top 20 shortlist; the full list contains current core holdings, challengers, sleeve benchmarks, tactical instruments, and watchlist names across all TITAN sleeves.
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -2404,14 +2236,20 @@ export default function TitanDashboard() {
                       {[
                         "Rank",
                         "Ticker",
-                        "Name",
+                        "Role",
                         "Sleeve",
-                        "Sector",
                         "Price",
+                        "Yield",
+                        "Disc/NAV",
+                        "Coverage",
+                        "6mo",
+                        "Z",
                         "Buy Zone",
                         "Trim Zone",
                         "Score",
+                        "Tax",
                         "Status",
+                        "Notes",
                         "",
                       ].map((h) => (
                         <th
@@ -2426,7 +2264,7 @@ export default function TitanDashboard() {
                   <tbody>
                     {benchCandidates.map((s, index) => {
                       const ticker = normalizeTicker(s.ticker);
-                      const owned = ownedTickers.has(s.ticker.toUpperCase());
+                      const owned = ownedTickers.has(ticker);
                       const live = liveQuotes[ticker];
                       const ta = technicalData[ticker];
                       const displayTa = displayTaFields(s, ta);
@@ -2450,19 +2288,17 @@ export default function TitanDashboard() {
                         trimHigh: displayTa.trimHigh,
                         taConfidence: displayTa.confidence,
                       });
+                      const top20 = Number(s.rank) <= 20;
+                      const tax = s.taxPocket || titanAssetLocation(s.ticker, s.sleeveFit).pocket;
                       return (
                         <tr key={`${s.ticker || "bench"}-${index}`} className="border-b border-[#E5D8A8] align-top">
                           <td className="p-2">
                             <input
-                              className="w-14 border border-[#E5D8A8] p-2 font-black"
+                              className="w-12 border border-[#E5D8A8] p-2 font-black"
                               type="number"
                               value={s.rank}
                               onChange={(e) =>
-                                updateBenchCandidate(
-                                  index,
-                                  "rank",
-                                  parseNumber(e.target.value),
-                                )
+                                updateBenchCandidate(index, "rank", parseNumber(e.target.value))
                               }
                             />
                           </td>
@@ -2471,38 +2307,29 @@ export default function TitanDashboard() {
                               className="w-20 border border-[#E5D8A8] p-2 font-black"
                               value={s.ticker}
                               onChange={(e) =>
-                                updateBenchCandidate(
-                                  index,
-                                  "ticker",
-                                  e.target.value.toUpperCase(),
-                                )
+                                updateBenchCandidate(index, "ticker", e.target.value.toUpperCase())
                               }
                             />
+                            <div className="mt-1 text-[10px] font-bold text-[#667085]">{s.name}</div>
                           </td>
                           <td className="p-2">
-                            <input
-                              className="w-48 border border-[#E5D8A8] p-2"
-                              value={s.name}
-                              onChange={(e) =>
-                                updateBenchCandidate(
-                                  index,
-                                  "name",
-                                  e.target.value,
-                                )
-                              }
-                            />
+                            <select
+                              className="w-28 border border-[#E5D8A8] p-2"
+                              value={s.role}
+                              onChange={(e) => updateBenchCandidate(index, "role", e.target.value as BenchRole)}
+                            >
+                              <option>Current Core</option>
+                              <option>Challenger</option>
+                              <option>Sleeve Benchmark</option>
+                              <option>Tactical</option>
+                              <option>Watchlist</option>
+                            </select>
                           </td>
                           <td className="p-2">
                             <select
                               className="w-28 border border-[#E5D8A8] p-2"
                               value={s.sleeveFit}
-                              onChange={(e) =>
-                                updateBenchCandidate(
-                                  index,
-                                  "sleeveFit",
-                                  e.target.value as Sleeve,
-                                )
-                              }
+                              onChange={(e) => updateBenchCandidate(index, "sleeveFit", e.target.value as Sleeve)}
                             >
                               <option>Infrastructure</option>
                               <option>BDC / Private Credit</option>
@@ -2510,76 +2337,108 @@ export default function TitanDashboard() {
                               <option>Credit / CEF</option>
                               <option>Tactical</option>
                             </select>
-                          </td>
-                          <td className="p-2">
-                            <input
-                              className="w-36 border border-[#E5D8A8] p-2"
-                              value={s.sector}
-                              onChange={(e) =>
-                                updateBenchCandidate(
-                                  index,
-                                  "sector",
-                                  e.target.value,
-                                )
-                              }
-                            />
+                            <div className="mt-1 text-[10px] text-[#667085]">{s.sector}</div>
                           </td>
                           <td className="p-2">
                             {valueBox(
                               formatCurrencyTable(displayTa.price || s.price),
-                              live
-                                ? `LIVE ${formatSignedPercentPoints(live.changePercent)}`
-                                : "STORED",
+                              live ? `LIVE ${formatSignedPercentPoints(live.changePercent)}` : "STORED",
                               live ? "positive" : "neutral",
                             )}
                           </td>
                           <td className="p-2">
-                            {zoneBox(
-                              displayTa.buyZoneLow,
-                              displayTa.buyZoneHigh,
-                              inBuyZone ? "IN ZONE" : "AUTO",
-                              inBuyZone ? "positive" : "neutral",
-                            )}
+                            <input
+                              className="w-16 border border-[#E5D8A8] p-2"
+                              type="number"
+                              step="0.001"
+                              value={s.yieldRate}
+                              onChange={(e) => updateBenchCandidate(index, "yieldRate", parseNumber(e.target.value))}
+                            />
+                            <div className="mt-1 text-[10px] font-bold text-[#667085]">{formatRatio(s.yieldRate, 1)}</div>
                           </td>
                           <td className="p-2">
-                            {zoneBox(
-                              displayTa.trimLow,
-                              displayTa.trimHigh,
-                              inTrimZone ? "TRIM / REDUCE" : "AUTO",
-                              inTrimZone ? "warning" : "neutral",
-                            )}
+                            <input
+                              className="w-16 border border-[#E5D8A8] p-2"
+                              type="number"
+                              step="0.001"
+                              value={s.discountNav}
+                              onChange={(e) => updateBenchCandidate(index, "discountNav", parseNumber(e.target.value))}
+                            />
+                            <div className="mt-1 text-[10px] font-bold text-[#667085]">{formatSignedRatio(s.discountNav, 1)}</div>
                           </td>
                           <td className="p-2">
-                            {valueBox(
-                              formatMetric(combinedScore),
-                              scoreLabel(combinedScore),
-                              scoreTone(combinedScore),
-                            )}
+                            <input
+                              className="w-16 border border-[#E5D8A8] p-2"
+                              type="number"
+                              step="0.01"
+                              value={s.coverage}
+                              onChange={(e) => updateBenchCandidate(index, "coverage", parseNumber(e.target.value))}
+                            />
+                          </td>
+                          <td className="p-2">
+                            <input
+                              className="w-16 border border-[#E5D8A8] p-2"
+                              type="number"
+                              step="0.001"
+                              value={s.sixMonthReturn}
+                              onChange={(e) => updateBenchCandidate(index, "sixMonthReturn", parseNumber(e.target.value))}
+                            />
+                            <div className="mt-1 text-[10px] font-bold text-[#667085]">{formatSignedRatio(s.sixMonthReturn, 1)}</div>
+                          </td>
+                          <td className="p-2">
+                            <input
+                              className="w-14 border border-[#E5D8A8] p-2"
+                              type="number"
+                              step="0.1"
+                              value={s.discountZ}
+                              onChange={(e) => updateBenchCandidate(index, "discountZ", parseNumber(e.target.value))}
+                            />
+                            <div className="mt-1 text-[10px] font-bold text-[#667085]">{formatMetric(s.discountZ, 1)}σ</div>
+                          </td>
+                          <td className="p-2">
+                            {zoneBox(displayTa.buyZoneLow, displayTa.buyZoneHigh, inBuyZone ? "IN ZONE" : "AUTO", inBuyZone ? "positive" : "neutral")}
+                          </td>
+                          <td className="p-2">
+                            {zoneBox(displayTa.trimLow, displayTa.trimHigh, inTrimZone ? "TRIM / REDUCE" : "AUTO", inTrimZone ? "warning" : "neutral")}
+                          </td>
+                          <td className="p-2">
+                            {valueBox(formatMetric(combinedScore), scoreLabel(combinedScore), scoreTone(combinedScore))}
+                          </td>
+                          <td className="p-2">
+                            <input
+                              className="w-32 border border-[#E5D8A8] p-2 text-[10px]"
+                              value={tax}
+                              onChange={(e) => updateBenchCandidate(index, "taxPocket", e.target.value)}
+                            />
                           </td>
                           <td className="p-3">
-                            <span
-                              className={`border px-2 py-1 text-xs font-black ${owned ? statusPill("HOLD") : statusPill("BUY")}`}
-                            >
-                              {owned ? "OWNED" : "BENCH"}
-                            </span>
+                            <div className="flex flex-col gap-1">
+                              <span className={`border px-2 py-1 text-xs font-black ${owned ? statusPill("HOLD") : top20 ? statusPill("BUY") : statusPill("HOLD")}`}>
+                                {owned ? "OWNED" : top20 ? "TOP 20" : s.role.toUpperCase()}
+                              </span>
+                              {s.role === "Watchlist" ? <span className="text-[10px] font-bold text-[#B42318]">Watch only</span> : null}
+                            </div>
+                          </td>
+                          <td className="p-2">
+                            <textarea
+                              className="h-14 w-64 border border-[#E5D8A8] p-2 text-[10px]"
+                              value={s.notes}
+                              onChange={(e) => updateBenchCandidate(index, "notes", e.target.value)}
+                            />
                           </td>
                           <td className="p-3">
                             <div className="flex flex-col gap-2">
                               <button
                                 type="button"
-                                disabled={owned || !s.ticker}
+                                disabled={owned || !s.ticker || s.role === "Sleeve Benchmark"}
                                 onClick={() => addCandidateToHoldings(s)}
-                                className={`px-3 py-2 text-xs font-black ${owned || !s.ticker ? "bg-slate-100 text-slate-400" : "bg-[#C9A84C] text-white"}`}
+                                className={`px-3 py-2 text-xs font-black ${owned || !s.ticker || s.role === "Sleeve Benchmark" ? "bg-slate-100 text-slate-400" : "bg-[#C9A84C] text-white"}`}
                               >
                                 {owned ? "Added" : "Promote"}
                               </button>
                               <button
                                 type="button"
-                                onClick={() =>
-                                  setBenchCandidates((prev) =>
-                                    prev.filter((_, i) => i !== index),
-                                  )
-                                }
+                                onClick={() => setBenchCandidates((prev) => prev.filter((_, i) => i !== index))}
                                 className="text-xs font-black text-[#B42318]"
                               >
                                 Delete
@@ -2613,10 +2472,10 @@ export default function TitanDashboard() {
                 {metricCard("Discount / Risk", "5%", "CEF z-score / dispersion")}
                 {metricCard("Technical Setup", "10%", "Buy zone / trend")}
                 {metricCard("Tax Location", "Rule 11", "Account routing")}
-                {metricCard("Bench", "Top 20", "Candidate pool")}
+                {metricCard("Bench", "60 names", "Candidate universe")}
               </div>
               <div className="mt-5 border border-[#E5D8A8] bg-[#F0EBD8] p-4 text-sm leading-6 text-[#344054]">
-                Current build: the main Bench and Holdings pages intentionally expose fewer fields. Refresh Live Data updates prices and technical inputs where available; manual income-risk inputs remain editable so the dashboard can roll them into one locked 0–100 TITAN Score plus Buy Zone and Trim Zone outputs.
+                Current build: the Bench now holds a 60-name TITAN candidate universe and identifies the first 20 ranks as the Top 20 shortlist. Refresh Live Data updates prices and technical inputs where available; manual income-risk inputs such as yield, coverage, discount/NAV, 6-month return, discount z-score, liquidity, and tax pocket roll into one locked 0–100 TITAN Score plus Buy Zone and Trim Zone outputs.
               </div>
               <div className="mt-5 overflow-x-auto">
                 <table className="w-full min-w-[980px] border-collapse text-sm">

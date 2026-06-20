@@ -991,7 +991,7 @@ export async function GET(request: Request) {
 
   const symbols = Array.from(new Set(["SPY", ...requestedSymbols])).slice(
     0,
-    60,
+    90,
   );
   const asOf = new Date().toISOString();
   const warnings: string[] = [];
@@ -1112,7 +1112,7 @@ export async function GET(request: Request) {
   if (includeTechnical && requestedTechnicalSymbols.length > 0) {
     const technicalSymbols = Array.from(new Set(requestedTechnicalSymbols)).slice(
       0,
-      30,
+      60,
     );
     await Promise.all(
       technicalSymbols.map(async (symbol) => {
