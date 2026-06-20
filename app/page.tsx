@@ -51,6 +51,7 @@ type Holding = {
   qualityScore: number;
   dispersion: number;
   daysHeld: number;
+  purchaseDate: string;
   above200dma: boolean;
   earningsBeforeExpiry: boolean;
   technicalExtension: number;
@@ -237,8 +238,8 @@ const TAB_LABELS: Record<Tab, string> = {
 };
 
 const STORAGE_KEYS = {
-  holdings: "titanIncomeHoldings.v2",
-  bench: "titanIncomeBench.v4",
+  holdings: "titanIncomeHoldings.v3",
+  bench: "titanIncomeBench.v5",
   calls: "titanIncomeCoveredCalls.v2",
   settings: "titanIncomeSettings.v2",
   liveSettings: "titanIncomeLiveSettings.v2",
@@ -412,6 +413,7 @@ const blankHolding = (): Holding => ({
   qualityScore: 0,
   dispersion: 0,
   daysHeld: 0,
+  purchaseDate: "",
   above200dma: false,
   earningsBeforeExpiry: false,
   technicalExtension: 0,
@@ -475,6 +477,16 @@ function displayDateString(): string {
     day: "numeric",
     year: "numeric",
   });
+}
+
+function daysHeldFromPurchaseDate(purchaseDate?: string): number | null {
+  if (!purchaseDate) return null;
+  const start = new Date(`${purchaseDate}T00:00:00`);
+  if (Number.isNaN(start.getTime())) return null;
+  const today = new Date();
+  const diff = today.getTime() - start.getTime();
+  if (diff < 0) return 0;
+  return Math.floor(diff / 86_400_000);
 }
 
 function formatCurrency(value: number): string {
@@ -629,6 +641,49 @@ function calculateTitanSignalScore(input: {
   return roundNumber(clampNumber(score, 0, 100), 0);
 }
 
+function calculateTitanScoreComponents(input: Parameters<typeof calculateTitanSignalScore>[0]) {
+  const yieldInput = typeof input.yieldRate === "number" ? input.yieldRate : input.upside;
+  const yieldScore = incomeYieldToScore(yieldInput);
+  const coverageScore =
+    typeof input.coverage === "number" && Number.isFinite(input.coverage)
+      ? clampNumber((input.coverage - 0.8) / 0.5 * 100, 0, 100)
+      : clampNumber(input.revisionScore, 0, 100);
+  const distributionSafetyScore = clampNumber((input.revisionScore * 0.55) + (coverageScore * 0.45), 0, 100);
+  const sixMonthScore =
+    typeof input.sixMonthReturn === "number" && Number.isFinite(input.sixMonthReturn)
+      ? clampNumber(50 + input.sixMonthReturn * 250, 0, 100)
+      : clampNumber(input.momentumScore, 0, 100);
+  const momentumScore = clampNumber((input.momentumScore * 0.65) + (sixMonthScore * 0.35), 0, 100);
+  const qualityScore = clampNumber(input.qualityScore, 0, 100);
+  const valuationScore =
+    typeof input.discountNav === "number" && input.discountNav < 0
+      ? clampNumber(60 + Math.abs(input.discountNav) * 250, 0, 100)
+      : typeof input.discountNav === "number" && input.discountNav > 0.2
+        ? clampNumber(80 - input.discountNav * 100, 20, 80)
+        : dispersionToScore(input.dispersion);
+  const zScoreBonus =
+    typeof input.discountZ === "number" && input.discountZ <= -1.5
+      ? 8
+      : typeof input.discountZ === "number" && input.discountZ <= -1.0
+        ? 5
+        : typeof input.discountZ === "number" && input.discountZ >= 1.0
+          ? -5
+          : 0;
+  const liquidityScore = typeof input.liquidityScore === "number" ? clampNumber(input.liquidityScore, 0, 100) : 75;
+  const technicalScore = calculateTechnicalSetupScore(input);
+  const total = calculateTitanSignalScore(input);
+  return {
+    yieldScore: roundNumber(yieldScore, 0),
+    distributionSafetyScore: roundNumber(distributionSafetyScore, 0),
+    momentumScore: roundNumber(momentumScore, 0),
+    qualityScore: roundNumber(qualityScore, 0),
+    valuationScore: roundNumber(valuationScore + zScoreBonus, 0),
+    liquidityScore: roundNumber(liquidityScore, 0),
+    technicalScore: roundNumber(technicalScore, 0),
+    total,
+  };
+}
+
 function autoTag(active: boolean, label = "AUTO") {
   return active ? (
     <div className="mt-1 text-[10px] font-black tracking-wide text-[#067647]">
@@ -705,16 +760,16 @@ function zoneBox(
 }
 
 function scoreTone(score: number): "neutral" | "positive" | "warning" | "negative" {
-  if (score >= 80) return "positive";
-  if (score >= 65) return "neutral";
-  if (score >= 50) return "warning";
+  if (score >= 78) return "positive";
+  if (score >= 68) return "neutral";
+  if (score >= 58) return "warning";
   return "negative";
 }
 
 function scoreLabel(score: number): string {
-  if (score >= 80) return "STRONG";
-  if (score >= 65) return "WATCH";
-  if (score >= 50) return "NEUTRAL";
+  if (score >= 78) return "STRONG";
+  if (score >= 68) return "QUALIFIED";
+  if (score >= 58) return "WATCH";
   return "WEAK";
 }
 
@@ -1267,7 +1322,8 @@ export default function TitanDashboard() {
       const marketValue = h.shares * h.price;
       const weight = longMarketValue > 0 ? marketValue / longMarketValue : 0;
       const gain = h.cost > 0 ? h.price / h.cost - 1 : 0;
-      const ltcg = h.daysHeld >= 366;
+      const daysHeld = daysHeldFromPurchaseDate(h.purchaseDate) ?? h.daysHeld ?? 0;
+      const ltcg = daysHeld >= 366;
       const priceInBuyZone =
         h.buyZoneLow > 0 &&
         h.buyZoneHigh > 0 &&
@@ -1282,8 +1338,8 @@ export default function TitanDashboard() {
         (h.technicalExtension >= 0.15 || atTrimZone);
       const trim = weight > 0.075 || (h.trimHigh > 0 && h.price >= h.trimHigh);
       const buy = priceInBuyZone && h.signalScore >= 65 && !invalidated;
-      const taxHarvest = gain < -0.08 && h.daysHeld < 366;
-      const sell = invalidated || (h.daysHeld >= 366 && h.titanRank > 100);
+      const taxHarvest = gain < -0.08 && daysHeld < 366;
+      const sell = invalidated || (daysHeld >= 366 && h.titanRank > 100);
       const action: ActionState = sell
         ? "SELL"
         : taxHarvest
@@ -1295,7 +1351,7 @@ export default function TitanDashboard() {
               : buy
                 ? "BUY"
                 : "HOLD";
-      return { ...h, marketValue, weight, gain, ltcg, coverEligible, action };
+      return { ...h, daysHeld, marketValue, weight, gain, ltcg, coverEligible, action };
     });
 
     const sectorWeights = Object.entries(
@@ -1382,7 +1438,7 @@ export default function TitanDashboard() {
         action: "FULL REBALANCE",
         title: "Build initial TITAN portfolio",
         detail:
-          "Portfolio is empty. Use the Bench tab to promote TITAN candidates into Holdings, then enter shares, cost basis, current price, and holding period.",
+          "Portfolio is empty. Use the Bench tab to promote TITAN candidates into Holdings, then enter shares, cost basis, and purchase date.",
       });
       return items;
     }
@@ -1446,6 +1502,33 @@ export default function TitanDashboard() {
     setHoldings((prev) =>
       prev.map((h) =>
         h.id === id ? ({ ...h, [field]: value } as Holding) : h,
+      ),
+    );
+  }
+
+  function updateHoldingTicker(id: string, value: string) {
+    const ticker = normalizeTicker(value);
+    const match =
+      benchCandidates.find((b) => normalizeTicker(b.ticker) === ticker) ??
+      DEFAULT_BENCH.find((b) => normalizeTicker(b.ticker) === ticker);
+    setHoldings((prev) =>
+      prev.map((h) =>
+        h.id === id
+          ? ({
+              ...h,
+              ticker,
+              name: match && (!h.name || h.name === h.ticker) ? match.name : h.name,
+              sleeve: match?.sleeveFit ?? h.sleeve,
+              sector: match?.sector ?? h.sector,
+              titanRank: match?.rank ?? h.titanRank,
+              signalScore: match?.signalScore ?? h.signalScore,
+              upside: match?.upside ?? h.upside,
+              revisionScore: match?.revisionScore ?? h.revisionScore,
+              momentumScore: match?.momentumScore ?? h.momentumScore,
+              qualityScore: match?.qualityScore ?? h.qualityScore,
+              dispersion: match?.dispersion ?? h.dispersion,
+            } as Holding)
+          : h,
       ),
     );
   }
@@ -1545,6 +1628,7 @@ export default function TitanDashboard() {
         qualityScore: candidate.qualityScore,
         dispersion: candidate.dispersion,
         daysHeld: 0,
+        purchaseDate: new Date().toISOString().slice(0, 10),
         above200dma: true,
         earningsBeforeExpiry: false,
         technicalExtension: 0,
@@ -1569,6 +1653,79 @@ export default function TitanDashboard() {
   }
 
   const ownedTickers = new Set(holdings.map((h) => h.ticker.toUpperCase()));
+
+  const scoredBenchCandidates = useMemo(() => {
+    return benchCandidates
+      .map((s, index) => {
+        const ticker = normalizeTicker(s.ticker);
+        const owned = ownedTickers.has(ticker);
+        const live = liveQuotes[ticker];
+        const income = incomeData[ticker];
+        const ta = technicalData[ticker];
+        const role = inferBenchRole(s.ticker, s.sleeveFit);
+        const displayYield = income?.dividendYield ?? s.yieldRate;
+        const displayTa = displayTaFields(s, ta);
+        const inBuyZone =
+          displayTa.price > 0 &&
+          displayTa.buyZoneLow > 0 &&
+          displayTa.buyZoneHigh > 0 &&
+          displayTa.price >= displayTa.buyZoneLow &&
+          displayTa.price <= displayTa.buyZoneHigh;
+        const inTrimZone =
+          displayTa.price > 0 &&
+          displayTa.trimLow > 0 &&
+          displayTa.price >= displayTa.trimLow;
+        const scoreInput = {
+          ...s,
+          yieldRate: displayYield,
+          sixMonthReturn: ta?.sixMonthReturn ?? s.sixMonthReturn,
+          price: displayTa.price,
+          buyZoneLow: displayTa.buyZoneLow,
+          buyZoneHigh: displayTa.buyZoneHigh,
+          stopLevel: displayTa.stopLevel,
+          trimLow: displayTa.trimLow,
+          trimHigh: displayTa.trimHigh,
+          taConfidence: displayTa.confidence,
+          above200dma: ta?.above200dma ?? undefined,
+          technicalExtension: ta?.technicalExtension ?? undefined,
+        };
+        const components = calculateTitanScoreComponents(scoreInput);
+        const tax = titanAssetLocation(s.ticker, s.sleeveFit).pocket;
+        return {
+          s,
+          index,
+          ticker,
+          owned,
+          live,
+          income,
+          ta,
+          role,
+          displayYield,
+          displayTa,
+          inBuyZone,
+          inTrimZone,
+          combinedScore: components.total,
+          components,
+          tax,
+        };
+      })
+      .sort((a, b) => b.combinedScore - a.combinedScore || a.s.rank - b.s.rank);
+  }, [benchCandidates, holdings, incomeData, liveQuotes, technicalData]);
+
+  const forwardPerformance = useMemo(() => {
+    const estimatedAnnualIncome = holdings.reduce((sum, h) => {
+      const ticker = normalizeTicker(h.ticker);
+      const benchMatch = benchCandidates.find((b) => normalizeTicker(b.ticker) === ticker);
+      const yieldRate = incomeData[ticker]?.dividendYield ?? benchMatch?.yieldRate ?? h.upside ?? 0;
+      const price = liveQuotes[ticker]?.price ?? h.price;
+      return sum + h.shares * price * yieldRate;
+    }, 0);
+    const financingCost = marginDebt * (marginRate / 100);
+    const netIncome = estimatedAnnualIncome - financingCost;
+    const totalReturn = snapshot.totalCost > 0 ? snapshot.totalPnl / snapshot.totalCost : 0;
+    const currentYield = snapshot.longMarketValue > 0 ? estimatedAnnualIncome / snapshot.longMarketValue : 0;
+    return { estimatedAnnualIncome, financingCost, netIncome, totalReturn, currentYield };
+  }, [benchCandidates, holdings, incomeData, liveQuotes, marginDebt, marginRate, snapshot.longMarketValue, snapshot.totalCost, snapshot.totalPnl]);
 
   return (
     <main className="min-h-screen bg-[#EEF1F6] text-[#0D1B2A]">
@@ -2019,8 +2176,7 @@ export default function TitanDashboard() {
                           "Sector",
                           "Shares",
                           "Cost",
-                          "Days",
-                          "Earnings",
+                          "Date Purchased",
                           "Price",
                           "Buy Zone",
                           "Trim Zone",
@@ -2044,6 +2200,11 @@ export default function TitanDashboard() {
                         const ticker = normalizeTicker(h.ticker);
                         const live = liveQuotes[ticker];
                         const ta = technicalData[ticker];
+                        const holdingBenchMatch =
+                          benchCandidates.find((b) => normalizeTicker(b.ticker) === ticker) ??
+                          DEFAULT_BENCH.find((b) => normalizeTicker(b.ticker) === ticker);
+                        const holdingSleeve = holdingBenchMatch?.sleeveFit ?? h.sleeve;
+                        const holdingSector = holdingBenchMatch?.sector ?? h.sector;
                         const displayTa = displayTaFields(h, ta);
                         const inBuyZone =
                           displayTa.price > 0 &&
@@ -2074,11 +2235,7 @@ export default function TitanDashboard() {
                                 className="w-24 border border-[#E5D8A8] p-2 font-black"
                                 value={h.ticker}
                                 onChange={(e) =>
-                                  updateHolding(
-                                    h.id,
-                                    "ticker",
-                                    e.target.value.toUpperCase(),
-                                  )
+                                  updateHoldingTicker(h.id, e.target.value)
                                 }
                               />
                             </td>
@@ -2192,7 +2349,7 @@ export default function TitanDashboard() {
                               {zoneBox(
                                 displayTa.buyZoneLow,
                                 displayTa.buyZoneHigh,
-                                inBuyZone ? "IN ZONE" : "AUTO",
+                                inBuyZone ? "IN ZONE" : undefined,
                                 inBuyZone ? "positive" : "neutral",
                               )}
                             </td>
@@ -2200,7 +2357,7 @@ export default function TitanDashboard() {
                               {zoneBox(
                                 displayTa.trimLow,
                                 displayTa.trimHigh,
-                                inTrimZone ? "TRIM / REDUCE" : "AUTO",
+                                inTrimZone ? "TRIM / REDUCE" : undefined,
                                 inTrimZone ? "warning" : "neutral",
                               )}
                             </td>
@@ -2257,7 +2414,7 @@ export default function TitanDashboard() {
                     Bench / Top Candidate Pool
                   </h3>
                   <p className="mt-2 text-sm text-[#344054]">
-                    Expanded TITAN candidate universe. The first 20 ranks are the current Top 20 shortlist. Role and tax location are automatically assigned by ticker/sleeve, yield is pulled from live data when available, and discount/NAV, coverage, six-month return, and z-score are internal score inputs rather than separate editable columns.
+                    Expanded TITAN candidate universe. Rows are automatically sorted by TITAN Score; the top 20 are the current shortlist. Role, sleeve, tax location, yield, price, buy zone, and trim zone are locked outputs; valuation, coverage, six-month return, and z-score remain internal score inputs.
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -2305,54 +2462,29 @@ export default function TitanDashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {benchCandidates.map((s, index) => {
-                      const ticker = normalizeTicker(s.ticker);
-                      const owned = ownedTickers.has(ticker);
-                      const live = liveQuotes[ticker];
-                      const income = incomeData[ticker];
-                      const ta = technicalData[ticker];
-                      const role = inferBenchRole(s.ticker, s.sleeveFit);
-                      const displayYield = income?.dividendYield ?? s.yieldRate;
-                      const displayTa = displayTaFields(s, ta);
-                      const inBuyZone =
-                        displayTa.price > 0 &&
-                        displayTa.buyZoneLow > 0 &&
-                        displayTa.buyZoneHigh > 0 &&
-                        displayTa.price >= displayTa.buyZoneLow &&
-                        displayTa.price <= displayTa.buyZoneHigh;
-                      const inTrimZone =
-                        displayTa.price > 0 &&
-                        displayTa.trimLow > 0 &&
-                        displayTa.price >= displayTa.trimLow;
-                      const combinedScore = calculateTitanSignalScore({
-                        ...s,
-                        yieldRate: displayYield,
-                        sixMonthReturn: ta?.sixMonthReturn ?? s.sixMonthReturn,
-                        price: displayTa.price,
-                        buyZoneLow: displayTa.buyZoneLow,
-                        buyZoneHigh: displayTa.buyZoneHigh,
-                        stopLevel: displayTa.stopLevel,
-                        trimLow: displayTa.trimLow,
-                        trimHigh: displayTa.trimHigh,
-                        taConfidence: displayTa.confidence,
-                      });
-                      const top20 = Number(s.rank) <= 20;
-                      const tax = titanAssetLocation(s.ticker, s.sleeveFit).pocket;
+                    {scoredBenchCandidates.map((row, sortedIndex) => {
+                      const {
+                        s,
+                        index,
+                        owned,
+                        live,
+                        role,
+                        displayYield,
+                        displayTa,
+                        inBuyZone,
+                        inTrimZone,
+                        combinedScore,
+                        tax,
+                      } = row;
+                      const top20 = sortedIndex < 20;
                       return (
                         <tr key={`${s.ticker || "bench"}-${index}`} className="border-b border-[#E5D8A8] align-top">
                           <td className="p-2">
-                            <input
-                              className="w-12 border border-[#E5D8A8] p-2 font-black"
-                              type="number"
-                              value={s.rank}
-                              onChange={(e) =>
-                                updateBenchCandidate(index, "rank", parseNumber(e.target.value))
-                              }
-                            />
+                            {valueBox(sortedIndex + 1, undefined, top20 ? "positive" : "neutral")}
                           </td>
                           <td className="p-2">
                             <input
-                              className="w-24 border border-[#E5D8A8] p-2 font-black"
+                              className="w-32 border border-[#E5D8A8] p-2 font-black"
                               value={s.ticker}
                               onChange={(e) =>
                                 updateBenchCandidate(index, "ticker", e.target.value.toUpperCase())
@@ -2361,43 +2493,32 @@ export default function TitanDashboard() {
                             <div className="mt-1 text-[10px] font-bold text-[#667085]">{s.name}</div>
                           </td>
                           <td className="p-2">
-                            {valueBox(role, "AUTO", role === "Current Core" || role === "Challenger" ? "positive" : role === "Watchlist" ? "warning" : "neutral")}
+                            {valueBox(role, undefined, role === "Current Core" || role === "Challenger" ? "positive" : role === "Watchlist" ? "warning" : "neutral")}
                           </td>
                           <td className="p-2">
-                            <select
-                              className="w-40 border border-[#E5D8A8] p-2"
-                              value={s.sleeveFit}
-                              onChange={(e) => updateBenchCandidate(index, "sleeveFit", e.target.value as Sleeve)}
-                            >
-                              <option>Infrastructure</option>
-                              <option>BDC / Private Credit</option>
-                              <option>Option-Income</option>
-                              <option>Credit / CEF</option>
-                              <option>Tactical</option>
-                            </select>
-                            <div className="mt-1 text-[10px] text-[#667085]">{s.sector}</div>
+                            {valueBox(s.sleeveFit, s.sector, "neutral")}
                           </td>
                           <td className="p-2">
                             {valueBox(
                               formatCurrencyTable(displayTa.price || s.price),
-                              live ? `LIVE ${formatSignedPercentPoints(live.changePercent)}` : "STORED",
+                              live ? formatSignedPercentPoints(live.changePercent) : undefined,
                               live ? "positive" : "neutral",
                             )}
                           </td>
                           <td className="p-2">
-                            {valueBox(formatRatio(displayYield, 1), income?.dividendYield ? "LIVE" : "MODEL", income?.dividendYield ? "positive" : "neutral")}
+                            {valueBox(formatRatio(displayYield, 1), undefined, "neutral")}
                           </td>
                           <td className="p-2">
-                            {zoneBox(displayTa.buyZoneLow, displayTa.buyZoneHigh, inBuyZone ? "IN ZONE" : "AUTO", inBuyZone ? "positive" : "neutral")}
+                            {zoneBox(displayTa.buyZoneLow, displayTa.buyZoneHigh, inBuyZone ? "IN ZONE" : undefined, inBuyZone ? "positive" : "neutral")}
                           </td>
                           <td className="p-2">
-                            {zoneBox(displayTa.trimLow, displayTa.trimHigh, inTrimZone ? "TRIM / REDUCE" : "AUTO", inTrimZone ? "warning" : "neutral")}
+                            {zoneBox(displayTa.trimLow, displayTa.trimHigh, inTrimZone ? "TRIM / REDUCE" : undefined, inTrimZone ? "warning" : "neutral")}
                           </td>
                           <td className="p-2">
                             {valueBox(formatMetric(combinedScore), scoreLabel(combinedScore), scoreTone(combinedScore))}
                           </td>
                           <td className="p-2">
-                            {valueBox(tax, "AUTO", "neutral")}
+                            {valueBox(tax, undefined, "neutral")}
                           </td>
                           <td className="p-3">
                             <div className="flex flex-col gap-1">
@@ -2440,40 +2561,36 @@ export default function TitanDashboard() {
             <section>
               <h3 className="text-xl font-black">TITAN Income Score Engine</h3>
               <p className="mt-2 text-sm text-[#344054]">
-                TITAN scoring is an income-risk screen, not a blind yield chase. Final ownership requires yield sustainability, distribution safety, credit trend, discount/valuation discipline, momentum confirmation, liquidity, tax-location fit, and sleeve role.
+                This tab now pulls directly from the full Bench universe. Refresh Live Data updates the prices, yield where available, technical inputs, and the resulting 0–100 score. The scoring label was recalibrated so high-quality 70s are marked QUALIFIED rather than incorrectly reading like weak watchlist names.
               </p>
               <div className="mt-4 grid gap-3 md:grid-cols-4">
-                {metricCard(
-                  "Yield / Income",
-                  "25%",
-                  "Current yield with risk cap",
-                )}
-                {metricCard("Distribution Safety", "25%", "Cut-risk control")}
-                {metricCard("Momentum", "15%", "3m / 6m trend")}
-                {metricCard("Quality / Liquidity", "20%", "Coverage / NAV / ADV")}
-                {metricCard("Discount / Risk", "5%", "CEF z-score / dispersion")}
-                {metricCard("Technical Setup", "10%", "Buy zone / trend")}
-                {metricCard("Tax Location", "Rule 11", "Account routing")}
-                {metricCard("Bench", "60 names", "Candidate universe")}
-              </div>
-              <div className="mt-5 border border-[#E5D8A8] bg-[#F0EBD8] p-4 text-sm leading-6 text-[#344054]">
-                Current build: the Bench now holds a 60-name TITAN candidate universe and identifies the first 20 ranks as the Top 20 shortlist. Refresh Live Data updates prices and technical inputs where available; manual income-risk inputs such as yield, coverage, discount/NAV, 6-month return, discount z-score, liquidity, and tax pocket roll into one locked 0–100 TITAN Score plus Buy Zone and Trim Zone outputs.
+                {metricCard("Yield / Income", "18%", "current yield with risk cap")}
+                {metricCard("Distribution Safety", "22%", "coverage + revision quality")}
+                {metricCard("Momentum", "14%", "3m / 6m trend")}
+                {metricCard("Quality", "18%", "NAV / balance sheet / durability")}
+                {metricCard("Valuation", "12%", "discount/NAV, z-score, dispersion")}
+                {metricCard("Liquidity", "6%", "execution capacity")}
+                {metricCard("Technical Setup", "10%", "buy zone / trim zone / trend")}
+                {metricCard("Bench", `${scoredBenchCandidates.length} names`, "sorted by total score")}
               </div>
               <div className="mt-5 overflow-x-auto">
-                <table className="w-full min-w-[980px] border-collapse text-sm">
+                <table className="compact-data-table w-full border-collapse">
                   <thead className="bg-[#0D1B2A] text-white">
                     <tr>
                       {[
+                        "Rank",
                         "Ticker",
-                        "Yield / Income",
-                        "Distribution Safety",
+                        "Role",
+                        "Sleeve",
+                        "Yield",
+                        "Safety",
                         "Momentum",
-                        "Quality / Liquidity",
-                        "Discount / Risk",
-                        "Optimal Pocket",
-                        "TA Buy Zone",
-                        "TA Status",
-                        "Source Status",
+                        "Quality",
+                        "Valuation",
+                        "TA",
+                        "Total",
+                        "Tax",
+                        "Status",
                       ].map((h) => (
                         <th
                           key={h}
@@ -2485,57 +2602,33 @@ export default function TitanDashboard() {
                     </tr>
                   </thead>
                   <tbody>
-                    {Array.from(
-                      new Set([
-                        ...holdings.map((h) => normalizeTicker(h.ticker)),
-                        ...benchCandidates.map((b) => normalizeTicker(b.ticker)),
-                      ].filter(Boolean)),
-                    )
-                      .slice(0, 30)
-                      .map((ticker) => {
-                        const candidate =
-                          benchCandidates.find((b) => normalizeTicker(b.ticker) === ticker) ??
-                          holdings.find((h) => normalizeTicker(h.ticker) === ticker);
-                        const location = candidate
-                          ? titanAssetLocation(candidate.ticker, "sleeve" in candidate ? candidate.sleeve : candidate.sleeveFit)
-                          : { pocket: "Manual", rationale: "No candidate record." };
-                        return (
-                          <tr key={ticker} className="border-b border-[#E5D8A8]">
-                            <td className="p-3 font-black">{ticker}</td>
-                            <td className="p-3">
-                              {candidate ? formatPercent(candidate.upside) : "Manual"}
-                            </td>
-                            <td className="p-3">
-                              {candidate ? `${candidate.revisionScore}/100` : "Manual"}
-                            </td>
-                            <td className="p-3">
-                              {candidate ? `${candidate.momentumScore}/100` : "Manual"}
-                            </td>
-                            <td className="p-3">
-                              {candidate ? `${candidate.qualityScore}/100` : "Manual"}
-                            </td>
-                            <td className="p-3">
-                              {candidate ? formatPercent(candidate.dispersion) : "Manual"}
-                            </td>
-                            <td className="p-3 text-xs text-[#344054]">
-                              <strong>{location.pocket}</strong><br />{location.rationale}
-                            </td>
-                            <td className="p-3">
-                              {technicalData[ticker]?.buyZoneLow && technicalData[ticker]?.buyZoneHigh
-                                ? `${formatCurrency(technicalData[ticker].buyZoneLow ?? 0)} – ${formatCurrency(technicalData[ticker].buyZoneHigh ?? 0)}`
-                                : "Manual"}
-                            </td>
-                            <td className="p-3 text-xs text-[#344054]">
-                              {technicalData[ticker]
-                                ? `${technicalData[ticker].confidence}; ${technicalData[ticker].trendState}; ${technicalData[ticker].macdState}`
-                                : "Refresh Live Data to load TA."}
-                            </td>
-                            <td className="p-3 text-xs text-[#344054]">
-                              Manual income score; live refresh updates quotes and technical fields only.
-                            </td>
-                          </tr>
-                        );
-                      })}
+                    {scoredBenchCandidates.map((row, sortedIndex) => {
+                      const top20 = sortedIndex < 20;
+                      return (
+                        <tr key={`score-${row.s.ticker}-${row.index}`} className="border-b border-[#E5D8A8]">
+                          <td className="p-2 font-black">{sortedIndex + 1}</td>
+                          <td className="p-2 font-black">
+                            {row.s.ticker}
+                            <div className="text-[10px] font-normal text-[#667085]">{row.s.name}</div>
+                          </td>
+                          <td className="p-2">{valueBox(row.role, undefined, row.role === "Watchlist" ? "warning" : "neutral")}</td>
+                          <td className="p-2">{valueBox(row.s.sleeveFit, row.s.sector, "neutral")}</td>
+                          <td className="p-2">{valueBox(formatRatio(row.displayYield, 1), `${row.components.yieldScore}/100`, "neutral")}</td>
+                          <td className="p-2">{valueBox(`${row.components.distributionSafetyScore}/100`, undefined, scoreTone(row.components.distributionSafetyScore))}</td>
+                          <td className="p-2">{valueBox(`${row.components.momentumScore}/100`, undefined, scoreTone(row.components.momentumScore))}</td>
+                          <td className="p-2">{valueBox(`${row.components.qualityScore}/100`, undefined, scoreTone(row.components.qualityScore))}</td>
+                          <td className="p-2">{valueBox(`${row.components.valuationScore}/100`, undefined, scoreTone(row.components.valuationScore))}</td>
+                          <td className="p-2">{valueBox(`${row.components.technicalScore}/100`, row.ta ? row.ta.trendState : undefined, scoreTone(row.components.technicalScore))}</td>
+                          <td className="p-2">{valueBox(formatMetric(row.combinedScore), scoreLabel(row.combinedScore), scoreTone(row.combinedScore))}</td>
+                          <td className="p-2">{valueBox(row.tax, undefined, "neutral")}</td>
+                          <td className="p-2">
+                            <span className={`border px-2 py-1 text-xs font-black ${top20 ? statusPill("BUY") : statusPill("HOLD")}`}>
+                              {top20 ? "TOP 20" : "BENCH"}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -2912,9 +3005,65 @@ export default function TitanDashboard() {
             <section>
               <h3 className="text-xl font-black">Performance</h3>
               <p className="mt-2 text-sm text-[#344054]">
-                TITAN is rules-based and backtest-supported, but realized results will depend on execution, financing costs, tax location, credit cycles, and distribution durability. This page should compare TITAN against PCEF, the blended income benchmark, 60/40, and passive buy-hold of the same holdings.
+                Backtest metrics remain as reference only. The top section below is the live forward ledger from current holdings and will update as shares, costs, prices, margin, and yield inputs change.
               </p>
-              <div className="mt-5 grid gap-3 md:grid-cols-4">
+
+              <h4 className="mt-5 font-black text-[#0D1B2A]">Live Forward P&L</h4>
+              <div className="mt-3 grid gap-3 md:grid-cols-4">
+                {metricCard("Market Value", formatCurrency(snapshot.longMarketValue), "current holdings value")}
+                {metricCard("Cost Basis", formatCurrency(snapshot.totalCost), "entered cost basis")}
+                {metricCard("Unrealized P&L", formatSignedCurrency(snapshot.totalPnl), formatPercent(forwardPerformance.totalReturn))}
+                {metricCard("Current Yield", formatPercent(forwardPerformance.currentYield), "gross annualized yield estimate")}
+                {metricCard("Gross Income", formatCurrency(forwardPerformance.estimatedAnnualIncome), "annualized before financing")}
+                {metricCard("Margin Cost", formatCurrency(forwardPerformance.financingCost), "annualized interest drag")}
+                {metricCard("Net Income", formatCurrency(forwardPerformance.netIncome), "gross income less margin cost")}
+                {metricCard("Net Liq", formatCurrency(snapshot.netLiquidationValue), "market value + cash - margin")}
+              </div>
+
+              <div className="mt-5 overflow-x-auto">
+                <table className="compact-data-table w-full border-collapse">
+                  <thead className="bg-[#0D1B2A] text-white">
+                    <tr>
+                      {["Ticker", "Shares", "Cost", "Price", "Market Value", "Weight", "P&L", "Return", "Action"].map((h) => (
+                        <th key={h} className="p-3 text-left text-xs uppercase tracking-wide">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {snapshot.enrichedHoldings.length === 0 ? (
+                      <tr>
+                        <td colSpan={9} className="p-4 text-sm text-[#344054]">
+                          No live holdings entered yet. Promote names from Bench and enter shares/cost to start forward performance tracking.
+                        </td>
+                      </tr>
+                    ) : (
+                      snapshot.enrichedHoldings
+                        .slice()
+                        .sort((a, b) => b.marketValue - a.marketValue)
+                        .map((h) => (
+                          <tr key={`perf-${h.id}`} className="border-b border-[#E5D8A8]">
+                            <td className="p-2 font-black">{h.ticker}</td>
+                            <td className="p-2">{h.shares.toLocaleString()}</td>
+                            <td className="p-2">{formatCurrencyTable(h.cost)}</td>
+                            <td className="p-2">{formatCurrencyTable(h.price)}</td>
+                            <td className="p-2 font-bold">{formatCurrency(h.marketValue)}</td>
+                            <td className="p-2">{formatPercent(h.weight)}</td>
+                            <td className={`p-2 font-bold ${h.marketValue - h.shares * h.cost >= 0 ? "text-[#067647]" : "text-[#B42318]"}`}>
+                              {formatSignedCurrency(h.marketValue - h.shares * h.cost)}
+                            </td>
+                            <td className={`p-2 font-bold ${h.gain >= 0 ? "text-[#067647]" : "text-[#B42318]"}`}>{formatPercent(h.gain)}</td>
+                            <td className="p-2">
+                              <span className={`border px-2 py-1 text-xs font-black ${statusPill(h.action)}`}>{h.action}</span>
+                            </td>
+                          </tr>
+                        ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <h4 className="mt-6 font-black text-[#0D1B2A]">Backtest Reference</h4>
+              <div className="mt-3 grid gap-3 md:grid-cols-4">
                 {metricCard("Annualized Return", "12.00%", "14Y CAGR backtest")}
                 {metricCard("Benchmark", "Blended Income", "PCEF / BIZD / AMLP / XYLD")}
                 {metricCard("Yield Model", "9.34%", "effective pre-tax yield")}
