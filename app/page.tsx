@@ -1250,6 +1250,11 @@ export default function TitanDashboard() {
   const [cash, setCash] = useState(0);
   const [marginDebt, setMarginDebt] = useState(0);
   const [marginRate, setMarginRate] = useState(5.75);
+  const [startingTitanCapital, setStartingTitanCapital] = useState(0);
+  const [assignedTitanCapital, setAssignedTitanCapital] = useState(0);
+  const [masterMonthlyMarginInterest, setMasterMonthlyMarginInterest] = useState(0);
+  const [totalStrategyDebits, setTotalStrategyDebits] = useState(0);
+  const [allocateMarginByDebitShare, setAllocateMarginByDebitShare] = useState(true);
   const [hydrated, setHydrated] = useState(false);
   const [liveQuotes, setLiveQuotes] = useState<Record<string, LiveQuote>>({});
   const [signalData, setSignalData] = useState<Record<string, SignalAutoData>>({});
@@ -1306,6 +1311,11 @@ export default function TitanDashboard() {
           cash?: number;
           marginDebt?: number;
           marginRate?: number;
+          startingTitanCapital?: number;
+          assignedTitanCapital?: number;
+          masterMonthlyMarginInterest?: number;
+          totalStrategyDebits?: number;
+          allocateMarginByDebitShare?: boolean;
         };
         if (typeof s.spy === "number") setSpy(s.spy);
         if (typeof s.ma50 === "number") setMa50(s.ma50);
@@ -1313,6 +1323,11 @@ export default function TitanDashboard() {
         if (typeof s.cash === "number") setCash(s.cash);
         if (typeof s.marginDebt === "number") setMarginDebt(s.marginDebt);
         if (typeof s.marginRate === "number") setMarginRate(s.marginRate);
+        if (typeof s.startingTitanCapital === "number") setStartingTitanCapital(s.startingTitanCapital);
+        if (typeof s.assignedTitanCapital === "number") setAssignedTitanCapital(s.assignedTitanCapital);
+        if (typeof s.masterMonthlyMarginInterest === "number") setMasterMonthlyMarginInterest(s.masterMonthlyMarginInterest);
+        if (typeof s.totalStrategyDebits === "number") setTotalStrategyDebits(s.totalStrategyDebits);
+        if (typeof s.allocateMarginByDebitShare === "boolean") setAllocateMarginByDebitShare(s.allocateMarginByDebitShare);
       }
       if (savedLiveSettings) {
         const s = JSON.parse(savedLiveSettings) as {
@@ -1353,9 +1368,34 @@ export default function TitanDashboard() {
     if (!hydrated) return;
     localStorage.setItem(
       STORAGE_KEYS.settings,
-      JSON.stringify({ spy, ma50, ma200, cash, marginDebt, marginRate }),
+      JSON.stringify({
+        spy,
+        ma50,
+        ma200,
+        cash,
+        marginDebt,
+        marginRate,
+        startingTitanCapital,
+        assignedTitanCapital,
+        masterMonthlyMarginInterest,
+        totalStrategyDebits,
+        allocateMarginByDebitShare,
+      }),
     );
-  }, [cash, hydrated, ma200, ma50, marginDebt, marginRate, spy]);
+  }, [
+    allocateMarginByDebitShare,
+    assignedTitanCapital,
+    cash,
+    hydrated,
+    ma200,
+    ma50,
+    marginDebt,
+    marginRate,
+    masterMonthlyMarginInterest,
+    spy,
+    startingTitanCapital,
+    totalStrategyDebits,
+  ]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1901,6 +1941,45 @@ export default function TitanDashboard() {
     const currentYield = snapshot.longMarketValue > 0 ? estimatedAnnualIncome / snapshot.longMarketValue : 0;
     return { estimatedAnnualIncome, financingCost, netIncome, totalReturn, currentYield };
   }, [benchCandidates, holdings, incomeData, liveQuotes, marginDebt, marginRate, snapshot.longMarketValue, snapshot.totalCost, snapshot.totalPnl, tradeStats.dividends, tradeStats.fees, tradeStats.interestExpense]);
+
+  const assignedCapitalBase =
+    assignedTitanCapital > 0
+      ? assignedTitanCapital
+      : startingTitanCapital > 0
+        ? startingTitanCapital
+        : ledgerNetContributions > 0
+          ? ledgerNetContributions
+          : 0;
+  const titanInternalDebit =
+    assignedCapitalBase > 0
+      ? Math.max(0, snapshot.longMarketValue - assignedCapitalBase)
+      : Math.max(0, marginDebt);
+  const debitAllocationDenominator =
+    totalStrategyDebits > 0 ? totalStrategyDebits : titanInternalDebit;
+  const titanDebitShare =
+    debitAllocationDenominator > 0
+      ? titanInternalDebit / debitAllocationDenominator
+      : 0;
+  const directAnnualFinancingCost = marginDebt * (marginRate / 100);
+  const allocatedAnnualFinancingCost =
+    allocateMarginByDebitShare &&
+    masterMonthlyMarginInterest > 0 &&
+    totalStrategyDebits > 0
+      ? masterMonthlyMarginInterest * 12 * titanDebitShare
+      : directAnnualFinancingCost;
+  const grossPnlBeforeAssignedFinancing =
+    ledgerTotalPnl + tradeStats.interestExpense + tradeStats.fees;
+  const netPnlAfterAssignedFinancing =
+    grossPnlBeforeAssignedFinancing - allocatedAnnualFinancingCost - tradeStats.fees;
+  const netPnlReturn =
+    ledgerNetContributions > 0
+      ? netPnlAfterAssignedFinancing / ledgerNetContributions
+      : 0;
+  const netIncomeAfterAssignedFinancing =
+    forwardPerformance.estimatedAnnualIncome +
+    tradeStats.dividends -
+    allocatedAnnualFinancingCost -
+    tradeStats.fees;
 
   return (
     <main className="min-h-screen bg-[#EEF1F6] text-[#0D1B2A]">
@@ -2802,33 +2881,117 @@ export default function TitanDashboard() {
             <section>
               <h3 className="text-xl font-black">Performance</h3>
               <p className="mt-2 text-sm text-[#344054]">
-                Forward performance is now tied to the Trade Log. Deposits, withdrawals, buys, sells, dividends, margin interest, and fees feed the live P&amp;L view. Backtest metrics remain reference-only and are shown at the bottom.
+                Forward performance is tied to the Trade Log and uses the same Tenacity ledger framework as FORGE: trade cash flows, open holdings, assigned financing, contribution tracking, and live P&amp;L. Backtest metrics remain reference-only at the bottom.
               </p>
 
-              <h4 className="mt-5 font-black text-[#0D1B2A]">Live Ledger Performance</h4>
-              <div className="mt-3 grid gap-3 md:grid-cols-4">
+              <div className="mt-5 grid gap-3 md:grid-cols-4">
                 {metricCard("Market Value", formatCurrency(snapshot.longMarketValue), "open holdings")}
                 {metricCard("Ledger Cash", formatCurrency(ledgerCash), "manual cash + trade cash flow")}
-                {metricCard("Net Liq", formatCurrency(ledgerNetLiquidationValue), "market value + cash - margin")}
-                {metricCard("Net Contributions", formatCurrency(ledgerNetContributions), "deposits less withdrawals")}
-                {metricCard("Total P&L", formatSignedCurrency(ledgerTotalPnl), formatPercent(ledgerTotalReturn), ledgerTotalPnl >= 0 ? "text-[#067647]" : "text-[#B42318]")}
-                {metricCard("Unrealized P&L", formatSignedCurrency(snapshot.totalPnl), formatPercent(forwardPerformance.totalReturn), snapshot.totalPnl >= 0 ? "text-[#067647]" : "text-[#B42318]")}
-                {metricCard("Realized P&L", formatSignedCurrency(tradeStats.realizedStockPnl), "sell trades", tradeStats.realizedStockPnl >= 0 ? "text-[#067647]" : "text-[#B42318]")}
-                {metricCard("Dividends", formatCurrency(tradeStats.dividends), "logged distributions")}
+                {metricCard("Net Liq", formatCurrency(ledgerNetLiquidationValue), "holdings + cash - margin")}
+                {metricCard("Net Contributions", formatCurrency(ledgerNetContributions), "deposits - withdrawals")}
+                {metricCard("Gross P&L", formatSignedCurrency(grossPnlBeforeAssignedFinancing), "before assigned financing", grossPnlBeforeAssignedFinancing >= 0 ? "text-[#067647]" : "text-[#B42318]")}
+                {metricCard("Assigned Financing", formatCurrency(allocatedAnnualFinancingCost), "annualized allocation")}
+                {metricCard("Net P&L", formatSignedCurrency(netPnlAfterAssignedFinancing), "after financing allocation", netPnlAfterAssignedFinancing >= 0 ? "text-[#067647]" : "text-[#B42318]")}
+                {metricCard("Net Return", formatPercent(netPnlReturn), "on net contributions", netPnlAfterAssignedFinancing >= 0 ? "text-[#067647]" : "text-[#B42318]")}
+                {metricCard("Internal Debit", formatCurrency(titanInternalDebit), "gross value - assigned capital")}
                 {metricCard("Current Yield", formatPercent(forwardPerformance.currentYield), "gross annualized yield estimate")}
                 {metricCard("Gross Income", formatCurrency(forwardPerformance.estimatedAnnualIncome), "annualized forward income")}
-                {metricCard("Margin Cost", formatCurrency(forwardPerformance.financingCost + tradeStats.interestExpense), "annualized + logged interest")}
-                {metricCard("Net Income", formatCurrency(forwardPerformance.netIncome), "income less financing/fees")}
+                {metricCard("Net Income", formatCurrency(netIncomeAfterAssignedFinancing), "income less financing/fees")}
+                {metricCard("Dividends", formatCurrency(tradeStats.dividends), "logged distributions")}
+                {metricCard("Fees / Expenses", formatCurrency(tradeStats.fees), "logged expenses")}
+                {metricCard("Weighted TITAN Score", snapshot.weightedTitanScore.toFixed(1), "current holdings")}
+                {metricCard("Benchmark", "TITAN Blend", "PCEF / BIZD / AMLP / AGG")}
               </div>
 
-              <div className="mt-5 grid gap-3 md:grid-cols-4">
-                {metricCard("Buy Cost", formatCurrency(tradeStats.buyCost), `${tradeStats.stockTradeCount} stock trades`)}
-                {metricCard("Sell Proceeds", formatCurrency(tradeStats.sellProceeds), "cash from sales")}
-                {metricCard("Fees", formatCurrency(tradeStats.fees), "logged expenses")}
-                {metricCard("Cash Impact", formatSignedCurrency(tradeStats.cashImpact), "net trade-log cash flow", tradeStats.cashImpact >= 0 ? "text-[#067647]" : "text-[#B42318]")}
+              <div className="mt-6 grid gap-4 md:grid-cols-2">
+                <div className="border border-[#E5D8A8] bg-white p-5">
+                  <h4 className="text-lg font-black text-[#0D1B2A]">Performance Settings</h4>
+                  <p className="mt-2 text-sm leading-6 text-[#344054]">
+                    Use these fields to allocate master-account margin expense to TITAN when APEX, TITAN, FORGE, and Concentrated sit inside the same E*TRADE account.
+                  </p>
+                  <div className="mt-5 grid gap-4 md:grid-cols-2">
+                    <label className="block">
+                      <span className="text-xs font-black uppercase tracking-widest text-[#C9A84C]">
+                        Starting TITAN Capital
+                      </span>
+                      <input
+                        className="mt-2 w-full border border-[#E5D8A8] p-3"
+                        type="number"
+                        value={startingTitanCapital}
+                        onChange={(e) => setStartingTitanCapital(Number(e.target.value))}
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-xs font-black uppercase tracking-widest text-[#C9A84C]">
+                        TITAN Assigned Equity Capital
+                      </span>
+                      <input
+                        className="mt-2 w-full border border-[#E5D8A8] p-3"
+                        type="number"
+                        value={assignedTitanCapital}
+                        onChange={(e) => setAssignedTitanCapital(Number(e.target.value))}
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-xs font-black uppercase tracking-widest text-[#C9A84C]">
+                        Master Monthly Margin Interest
+                      </span>
+                      <input
+                        className="mt-2 w-full border border-[#E5D8A8] p-3"
+                        type="number"
+                        value={masterMonthlyMarginInterest}
+                        onChange={(e) => setMasterMonthlyMarginInterest(Number(e.target.value))}
+                      />
+                    </label>
+                    <label className="block">
+                      <span className="text-xs font-black uppercase tracking-widest text-[#C9A84C]">
+                        Total Strategy Debits
+                      </span>
+                      <input
+                        className="mt-2 w-full border border-[#E5D8A8] p-3"
+                        type="number"
+                        value={totalStrategyDebits}
+                        onChange={(e) => setTotalStrategyDebits(Number(e.target.value))}
+                      />
+                    </label>
+                  </div>
+                  <label className="mt-4 flex items-center gap-2 text-sm font-bold text-[#0D1B2A]">
+                    <input
+                      type="checkbox"
+                      checked={allocateMarginByDebitShare}
+                      onChange={(e) => setAllocateMarginByDebitShare(e.target.checked)}
+                    />
+                    Allocate margin by average debit share
+                  </label>
+                </div>
+
+                <div className="border border-[#E5D8A8] bg-[#F0EBD8] p-5">
+                  <h4 className="text-lg font-black text-[#0D1B2A]">Allocation Logic</h4>
+                  <div className="mt-4 divide-y divide-[#E5D8A8] text-sm">
+                    <div className="flex items-center justify-between py-3">
+                      <span>TITAN internal debit</span>
+                      <strong>{formatCurrency(titanInternalDebit)}</strong>
+                    </div>
+                    <div className="flex items-center justify-between py-3">
+                      <span>Total strategy debits</span>
+                      <strong>{formatCurrency(debitAllocationDenominator)}</strong>
+                    </div>
+                    <div className="flex items-center justify-between py-3">
+                      <span>Debit share</span>
+                      <strong>{debitAllocationDenominator > 0 ? formatPercent(titanDebitShare) : "—"}</strong>
+                    </div>
+                    <div className="flex items-center justify-between py-3">
+                      <span>Assigned annual margin cost</span>
+                      <strong>{formatCurrency(allocatedAnnualFinancingCost)}</strong>
+                    </div>
+                  </div>
+                  <p className="mt-4 text-xs leading-5 text-[#344054]">
+                    If the allocation fields are blank, the fallback remains the direct TITAN margin-debt estimate: margin debt × margin rate. Use the master-account fields when multiple Tenacity strategies share one portfolio margin account.
+                  </p>
+                </div>
               </div>
 
-              <div className="mt-5 overflow-x-auto">
+              <div className="mt-6 overflow-x-auto">
                 <table className="compact-data-table w-full border-collapse">
                   <thead className="bg-[#0D1B2A] text-white">
                     <tr>
@@ -2877,7 +3040,7 @@ export default function TitanDashboard() {
               <h4 className="mt-6 font-black text-[#0D1B2A]">Backtest Reference</h4>
               <div className="mt-3 grid gap-3 md:grid-cols-4">
                 {metricCard("Annualized Return", "12.00%", "14Y CAGR backtest")}
-                {metricCard("Benchmark", "Blended Income", "PCEF / BIZD / AMLP / XYLD")}
+                {metricCard("Reference Benchmark", "Blended Income", "PCEF / BIZD / AMLP / XYLD")}
                 {metricCard("Yield Model", "9.34%", "effective pre-tax yield")}
                 {metricCard("Turnover", "Monthly", "rule-based rebalance")}
               </div>
