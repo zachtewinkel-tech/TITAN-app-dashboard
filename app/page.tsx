@@ -7,9 +7,9 @@ type Tab =
   | "actionItems"
   | "holdings"
   | "bench"
+  | "tradeLog"
   | "titanScore"
   | "taxLots"
-  | "coveredCalls"
   | "performance"
   | "fundProfile"
   | "ruleSet"
@@ -33,6 +33,50 @@ type ActionState =
   | "BUY BACK"
   | "TAX HARVEST"
   | "DAF CANDIDATE";
+
+type TradeType =
+  | "deposit"
+  | "withdrawal"
+  | "dividend"
+  | "interest_expense"
+  | "fee"
+  | "buy_stock"
+  | "sell_stock";
+
+type Trade = {
+  id: string;
+  createdAt: string;
+  date: string;
+  type: TradeType;
+  ticker: string;
+  amount: number;
+  shares: number;
+  price: number;
+  notes: string;
+};
+
+type TradeFormState = {
+  date: string;
+  type: TradeType;
+  ticker: string;
+  amount: string;
+  shares: string;
+  price: string;
+  notes: string;
+};
+
+type TradeStats = {
+  cashImpact: number;
+  deposits: number;
+  withdrawals: number;
+  dividends: number;
+  interestExpense: number;
+  fees: number;
+  buyCost: number;
+  sellProceeds: number;
+  realizedStockPnl: number;
+  stockTradeCount: number;
+};
 
 type Holding = {
   id: string;
@@ -228,9 +272,9 @@ const TAB_LABELS: Record<Tab, string> = {
   actionItems: "Action Items",
   holdings: "Holdings",
   bench: "Bench",
+  tradeLog: "Trade Log",
   titanScore: "TITAN Score",
   taxLots: "Tax / Location",
-  coveredCalls: "Call Overlay",
   performance: "Performance",
   fundProfile: "Fund Profile",
   ruleSet: "Rule Set",
@@ -238,9 +282,9 @@ const TAB_LABELS: Record<Tab, string> = {
 };
 
 const STORAGE_KEYS = {
-  holdings: "titanIncomeHoldings.v3",
+  holdings: "titanIncomeHoldings.v4",
+  trades: "titanIncomeTrades.v1",
   bench: "titanIncomeBench.v5",
-  calls: "titanIncomeCoveredCalls.v2",
   settings: "titanIncomeSettings.v2",
   liveSettings: "titanIncomeLiveSettings.v2",
 };
@@ -254,6 +298,16 @@ const DEFAULT_TA_FIELDS = {
   trimHigh: 0,
   taConfidence: "Manual" as TaConfidence,
   taNotes: "",
+};
+
+const DEFAULT_TRADE_FORM: TradeFormState = {
+  date: new Date().toISOString().slice(0, 10),
+  type: "buy_stock",
+  ticker: "",
+  amount: "",
+  shares: "",
+  price: "",
+  notes: "",
 };
 
 const DEFAULT_INCOME_FIELDS = {
@@ -989,15 +1043,207 @@ function parseNumber(value: string): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function tradeDollarAmount(trade: Trade): number {
+  if (trade.amount > 0) return trade.amount;
+  if (trade.shares > 0 && trade.price > 0) return trade.shares * trade.price;
+  return 0;
+}
+
+function buildTradeStats(trades: Trade[]): TradeStats {
+  const positions = new Map<string, { shares: number; costBasis: number }>();
+  const stats: TradeStats = {
+    cashImpact: 0,
+    deposits: 0,
+    withdrawals: 0,
+    dividends: 0,
+    interestExpense: 0,
+    fees: 0,
+    buyCost: 0,
+    sellProceeds: 0,
+    realizedStockPnl: 0,
+    stockTradeCount: 0,
+  };
+
+  trades
+    .slice()
+    .sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt))
+    .forEach((trade) => {
+      const ticker = normalizeTicker(trade.ticker);
+      const amount = tradeDollarAmount(trade);
+      if (trade.type === "deposit") {
+        stats.deposits += amount;
+        stats.cashImpact += amount;
+        return;
+      }
+      if (trade.type === "withdrawal") {
+        stats.withdrawals += amount;
+        stats.cashImpact -= amount;
+        return;
+      }
+      if (trade.type === "dividend") {
+        stats.dividends += amount;
+        stats.cashImpact += amount;
+        return;
+      }
+      if (trade.type === "interest_expense") {
+        stats.interestExpense += amount;
+        stats.cashImpact -= amount;
+        return;
+      }
+      if (trade.type === "fee") {
+        stats.fees += amount;
+        stats.cashImpact -= amount;
+        return;
+      }
+      if (!ticker || trade.shares <= 0) return;
+      const current = positions.get(ticker) ?? { shares: 0, costBasis: 0 };
+      if (trade.type === "buy_stock") {
+        const cost = amount;
+        current.shares += trade.shares;
+        current.costBasis += cost;
+        stats.buyCost += cost;
+        stats.cashImpact -= cost;
+        stats.stockTradeCount += 1;
+        positions.set(ticker, current);
+        return;
+      }
+      if (trade.type === "sell_stock") {
+        const soldShares = Math.min(trade.shares, current.shares);
+        const avgCost = current.shares > 0 ? current.costBasis / current.shares : 0;
+        const costRemoved = avgCost * soldShares;
+        const proceeds = amount;
+        current.shares = Math.max(0, current.shares - soldShares);
+        current.costBasis = Math.max(0, current.costBasis - costRemoved);
+        stats.sellProceeds += proceeds;
+        stats.cashImpact += proceeds;
+        stats.realizedStockPnl += proceeds - costRemoved;
+        stats.stockTradeCount += 1;
+        positions.set(ticker, current);
+      }
+    });
+
+  return stats;
+}
+
+function deriveHoldingsFromTrades(
+  trades: Trade[],
+  benchCandidates: BenchCandidate[],
+  liveQuotes: Record<string, LiveQuote>,
+  incomeData: Record<string, IncomeAutoData>,
+  technicalData: Record<string, TechnicalAutoData>,
+): Holding[] {
+  const lots = new Map<string, { shares: number; costBasis: number; firstDate: string }>();
+  trades
+    .slice()
+    .sort((a, b) => a.date.localeCompare(b.date) || a.createdAt.localeCompare(b.createdAt))
+    .forEach((trade) => {
+      const ticker = normalizeTicker(trade.ticker);
+      if (!ticker || trade.shares <= 0) return;
+      const amount = tradeDollarAmount(trade);
+      const current = lots.get(ticker) ?? { shares: 0, costBasis: 0, firstDate: trade.date || todayIso() };
+      if (trade.type === "buy_stock") {
+        current.shares += trade.shares;
+        current.costBasis += amount;
+        if (!current.firstDate || trade.date < current.firstDate) current.firstDate = trade.date;
+        lots.set(ticker, current);
+        return;
+      }
+      if (trade.type === "sell_stock") {
+        const soldShares = Math.min(trade.shares, current.shares);
+        const avgCost = current.shares > 0 ? current.costBasis / current.shares : 0;
+        current.shares = Math.max(0, current.shares - soldShares);
+        current.costBasis = Math.max(0, current.costBasis - avgCost * soldShares);
+        lots.set(ticker, current);
+      }
+    });
+
+  return Array.from(lots.entries())
+    .filter(([, lot]) => lot.shares > 0.000001)
+    .map(([ticker, lot]) => {
+      const match =
+        benchCandidates.find((b) => normalizeTicker(b.ticker) === ticker) ??
+        DEFAULT_BENCH.find((b) => normalizeTicker(b.ticker) === ticker);
+      const sleeve = match?.sleeveFit ?? "Infrastructure";
+      const sector = match?.sector ?? sleeve;
+      const avgCost = lot.shares > 0 ? lot.costBasis / lot.shares : 0;
+      const quotePrice = liveQuotes[ticker]?.price ?? null;
+      const price = quotePrice ?? match?.price ?? avgCost;
+      const ta = technicalData[ticker];
+      const displayTa = match ? displayTaFields(match, ta) : {
+        price,
+        buyZoneLow: price > 0 ? price * 0.88 : 0,
+        buyZoneHigh: price > 0 ? price * 0.97 : 0,
+        buyAnchor: price,
+        stopLevel: price > 0 ? price * 0.82 : 0,
+        trimLow: price > 0 ? price * 1.1 : 0,
+        trimHigh: price > 0 ? price * 1.18 : 0,
+        confidence: "Manual" as TaConfidence,
+      };
+      const yieldRate = incomeData[ticker]?.dividendYield ?? match?.yieldRate ?? match?.upside ?? 0;
+      const scoreInput = {
+        ...(match ?? blankBenchCandidate(999)),
+        yieldRate,
+        sixMonthReturn: ta?.sixMonthReturn ?? match?.sixMonthReturn ?? 0,
+        price: displayTa.price || price,
+        buyZoneLow: displayTa.buyZoneLow,
+        buyZoneHigh: displayTa.buyZoneHigh,
+        stopLevel: displayTa.stopLevel,
+        trimLow: displayTa.trimLow,
+        trimHigh: displayTa.trimHigh,
+        taConfidence: displayTa.confidence,
+        above200dma: ta?.above200dma ?? true,
+        technicalExtension: ta?.technicalExtension ?? 0,
+      };
+
+      return {
+        id: `trade-ledger-${ticker}`,
+        ticker,
+        name: match?.name ?? ticker,
+        sleeve,
+        sector,
+        shares: roundNumber(lot.shares, 4),
+        cost: roundNumber(avgCost, 4),
+        price: roundNumber(price, 4),
+        titanRank: match?.rank ?? 999,
+        signalScore: calculateTitanSignalScore(scoreInput),
+        upside: yieldRate,
+        revisionScore: match?.revisionScore ?? 50,
+        momentumScore: match?.momentumScore ?? 50,
+        qualityScore: match?.qualityScore ?? 50,
+        dispersion: match?.dispersion ?? 0.2,
+        daysHeld: daysHeldFromPurchaseDate(lot.firstDate) ?? 0,
+        purchaseDate: lot.firstDate,
+        above200dma: ta?.above200dma ?? true,
+        earningsBeforeExpiry: false,
+        technicalExtension: ta?.technicalExtension ?? 0,
+        buyZoneLow: displayTa.buyZoneLow,
+        buyZoneHigh: displayTa.buyZoneHigh,
+        buyAnchor: displayTa.buyAnchor,
+        stopLevel: displayTa.stopLevel,
+        trimLow: displayTa.trimLow,
+        trimHigh: displayTa.trimHigh,
+        taConfidence: displayTa.confidence,
+        taNotes: ta?.notes ?? "Trade-log derived holding.",
+        notes: "Derived from Trade Log.",
+      };
+    })
+    .sort((a, b) => b.shares * b.price - a.shares * a.price);
+}
+
 export default function TitanDashboard() {
   const [activeTab, setActiveTab] = useState<Tab>("dailyBrief");
   const [holdings, setHoldings] = useState<Holding[]>([]);
+  const [trades, setTrades] = useState<Trade[]>([]);
+  const [tradeForm, setTradeForm] = useState<TradeFormState>({
+    ...DEFAULT_TRADE_FORM,
+    date: todayIso(),
+  });
   const [benchCandidates, setBenchCandidates] =
     useState<BenchCandidate[]>(DEFAULT_BENCH);
-  const [openCalls, setOpenCalls] = useState<CoveredCall[]>([]);
-  const [optionCandidates, setOptionCandidates] = useState<
-    Record<string, OptionCandidate[]>
-  >({});
   const [spy, setSpy] = useState(70);
   const [ma50, setMa50] = useState(18);
   const [ma200, setMa200] = useState(110);
@@ -1019,12 +1265,13 @@ export default function TitanDashboard() {
   useEffect(() => {
     try {
       const savedHoldings = localStorage.getItem(STORAGE_KEYS.holdings);
+      const savedTrades = localStorage.getItem(STORAGE_KEYS.trades);
       const savedBench = localStorage.getItem(STORAGE_KEYS.bench);
-      const savedCalls = localStorage.getItem(STORAGE_KEYS.calls);
       const savedSettings = localStorage.getItem(STORAGE_KEYS.settings);
       const savedLiveSettings = localStorage.getItem(STORAGE_KEYS.liveSettings);
 
       if (savedHoldings) setHoldings(JSON.parse(savedHoldings) as Holding[]);
+      if (savedTrades) setTrades(JSON.parse(savedTrades) as Trade[]);
       if (savedBench)
         setBenchCandidates(
           (JSON.parse(savedBench) as Partial<BenchCandidate>[]).map((candidate, index) => {
@@ -1051,7 +1298,6 @@ export default function TitanDashboard() {
             };
           }) as BenchCandidate[],
         );
-      if (savedCalls) setOpenCalls(JSON.parse(savedCalls) as CoveredCall[]);
       if (savedSettings) {
         const s = JSON.parse(savedSettings) as {
           spy?: number;
@@ -1095,13 +1341,13 @@ export default function TitanDashboard() {
 
   useEffect(() => {
     if (!hydrated) return;
-    localStorage.setItem(STORAGE_KEYS.bench, JSON.stringify(benchCandidates));
-  }, [benchCandidates, hydrated]);
+    localStorage.setItem(STORAGE_KEYS.trades, JSON.stringify(trades));
+  }, [hydrated, trades]);
 
   useEffect(() => {
     if (!hydrated) return;
-    localStorage.setItem(STORAGE_KEYS.calls, JSON.stringify(openCalls));
-  }, [openCalls, hydrated]);
+    localStorage.setItem(STORAGE_KEYS.bench, JSON.stringify(benchCandidates));
+  }, [benchCandidates, hydrated]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1119,6 +1365,11 @@ export default function TitanDashboard() {
     );
   }, [autoRefreshQuotes, finnhubApiKey, hydrated, useLiveQuotes]);
 
+  useEffect(() => {
+    if (!hydrated) return;
+    setHoldings(deriveHoldingsFromTrades(trades, benchCandidates, liveQuotes, incomeData, technicalData));
+  }, [benchCandidates, hydrated, incomeData, liveQuotes, technicalData, trades]);
+
   const quoteSymbols = useMemo(() => {
     const symbols = [
       "SPY",
@@ -1126,20 +1377,14 @@ export default function TitanDashboard() {
       "HYG",
       "AGG",
       ...holdings.map((h) => h.ticker),
+      ...trades.map((t) => t.ticker),
       ...benchCandidates.map((b) => b.ticker),
-      ...openCalls.map((c) => c.ticker),
     ]
       .map(normalizeTicker)
       .filter(Boolean);
     return Array.from(new Set(symbols)).slice(0, 80).join(",");
-  }, [benchCandidates, holdings, openCalls]);
+  }, [benchCandidates, holdings, trades]);
 
-  const optionSymbols = useMemo(() => {
-    const symbols = holdings
-      .filter((h) => h.ticker && h.shares > 0)
-      .map((h) => normalizeTicker(h.ticker));
-    return Array.from(new Set(symbols)).slice(0, 20).join(",");
-  }, [holdings]);
 
   const signalSymbols = useMemo(() => {
     const symbols = [
@@ -1156,9 +1401,7 @@ export default function TitanDashboard() {
     setLiveLoading(true);
     setLiveError("");
     try {
-      const optionQuery = optionSymbols
-        ? `&includeOptions=1&optionSymbols=${encodeURIComponent(optionSymbols)}`
-        : "";
+      const optionQuery = "";
       const signalQuery = "";
       const incomeQuery = signalSymbols
         ? `&includeIncome=1&incomeSymbols=${encodeURIComponent(signalSymbols)}`
@@ -1189,7 +1432,6 @@ export default function TitanDashboard() {
       setLiveQuotes(data.quotes ?? {});
       setSignalData({});
       setTechnicalData(data.technical ?? {});
-      setOptionCandidates(data.options ?? {});
       setLastLiveRefresh(data.asOf ?? new Date().toISOString());
 
       setHoldings((prev) =>
@@ -1246,14 +1488,6 @@ export default function TitanDashboard() {
           };
         }),
       );
-      setOpenCalls((prev) =>
-        prev.map((c) => {
-          const q = data.quotes?.[normalizeTicker(c.ticker)];
-          return q?.price
-            ? { ...c, stockPrice: Number(q.price.toFixed(2)) }
-            : c;
-        }),
-      );
     } catch (error) {
       setLiveError(
         error instanceof Error ? error.message : "Unknown market-data error.",
@@ -1276,7 +1510,6 @@ export default function TitanDashboard() {
     autoRefreshQuotes,
     finnhubApiKey,
     hydrated,
-    optionSymbols,
     quoteSymbols,
     signalSymbols,
     useLiveQuotes,
@@ -1367,24 +1600,6 @@ export default function TitanDashboard() {
       }))
       .sort((a, b) => b.weight - a.weight);
 
-    const callAlerts = openCalls.map((c) => {
-      const withinFivePercent =
-        c.strike > 0 ? c.stockPrice >= c.strike * 0.95 : false;
-      const twoTimesLoss =
-        c.premiumReceived > 0 ? c.currentMark >= c.premiumReceived * 2 : false;
-      const capture =
-        c.premiumReceived > 0
-          ? (c.premiumReceived - c.currentMark) / c.premiumReceived
-          : 0;
-      const buyback =
-        c.delta >= 0.35 ||
-        withinFivePercent ||
-        twoTimesLoss ||
-        capture >= 0.7 ||
-        c.dte <= 7 ||
-        c.earningsBeforeExpiry;
-      return { ...c, capture, buyback };
-    });
 
     const hardStopActive = regime.overlay.startsWith("Hard stop");
     const cutReviewActive = enrichedHoldings.some(
@@ -1404,8 +1619,7 @@ export default function TitanDashboard() {
               ? "CUT REVIEW"
               : Math.abs(leverageGap) > 0.03
                 ? "FULL REBALANCE"
-                : (firstHoldingAction ??
-                  (callAlerts.some((c) => c.buyback) ? "BUY BACK" : "HOLD"));
+                : (firstHoldingAction ?? "HOLD");
 
     return {
       longMarketValue,
@@ -1425,10 +1639,9 @@ export default function TitanDashboard() {
       primaryAction,
       enrichedHoldings,
       sectorWeights,
-      callAlerts,
       annualFinancingCost: marginDebt * (marginRate / 100),
     };
-  }, [cash, holdings, ma50, ma200, marginDebt, marginRate, openCalls, spy]);
+  }, [cash, holdings, ma50, ma200, marginDebt, marginRate, spy]);
 
   const actionItems = useMemo(() => {
     const items: Array<{ action: ActionState; title: string; detail: string }> =
@@ -1438,7 +1651,7 @@ export default function TitanDashboard() {
         action: "FULL REBALANCE",
         title: "Build initial TITAN portfolio",
         detail:
-          "Portfolio is empty. Use the Bench tab to promote TITAN candidates into Holdings, then enter shares, cost basis, and purchase date.",
+          "Portfolio is empty. Add buy trades in the Trade Log; Holdings are now generated from executed trades rather than Bench promotions.",
       });
       return items;
     }
@@ -1458,30 +1671,6 @@ export default function TitanDashboard() {
           detail: `${h.name}; weight ${(h.weight * 100).toFixed(1)}%, rank ${h.titanRank}, days held ${h.daysHeld}.`,
         });
       });
-    snapshot.enrichedHoldings
-      .filter(
-        (h) =>
-          h.coverEligible &&
-          (optionCandidates[normalizeTicker(h.ticker)]?.length ?? 0) > 0,
-      )
-      .forEach((h) => {
-        const top = optionCandidates[normalizeTicker(h.ticker)]?.[0];
-        if (top)
-          items.push({
-            action: "COVER",
-            title: `${h.ticker} optional-call candidate`,
-            detail: `Finnhub chain candidate: ${top.expiration} $${top.strike.toFixed(2)} call, ${top.dte} DTE, delta ${top.delta === null ? "n/a" : top.delta.toFixed(2)}, mid ${top.mid === null ? "n/a" : formatCurrency(top.mid)}.`,
-          });
-      });
-    snapshot.callAlerts
-      .filter((c) => c.buyback)
-      .forEach((c) => {
-        items.push({
-          action: "BUY BACK",
-          title: `${c.ticker} call buyback trigger`,
-          detail: `Delta ${c.delta.toFixed(2)}, ${c.dte} DTE, capture ${(c.capture * 100).toFixed(0)}%. Buyback-first overlay rule applies.`,
-        });
-      });
     return items.length
       ? items
       : [
@@ -1489,10 +1678,10 @@ export default function TitanDashboard() {
             action: "HOLD" as ActionState,
             title: "No hard rule triggered",
             detail:
-              "Maintain current portfolio posture; continue monitoring regime, rankings, tax lots, and optional overlay status.",
+              "Maintain current portfolio posture; continue monitoring regime, rankings, tax lots, income safety, and trade-ledger performance.",
           },
         ];
-  }, [holdings.length, optionCandidates, snapshot]);
+  }, [holdings.length, snapshot]);
 
   function updateHolding(
     id: string,
@@ -1533,17 +1722,6 @@ export default function TitanDashboard() {
     );
   }
 
-  function updateCall(
-    id: string,
-    field: keyof CoveredCall,
-    value: string | number | boolean,
-  ) {
-    setOpenCalls((prev) =>
-      prev.map((c) =>
-        c.id === id ? ({ ...c, [field]: value } as CoveredCall) : c,
-      ),
-    );
-  }
 
   function updateBenchCandidate(
     index: number,
@@ -1576,79 +1754,66 @@ export default function TitanDashboard() {
     }
   }
 
-  function addOptionCandidateToCalls(candidate: OptionCandidate) {
-    setOpenCalls((prev) => [
+
+  function prefillTradeFromCandidate(candidate: BenchCandidate) {
+    const ticker = normalizeTicker(candidate.ticker);
+    const live = liveQuotes[ticker];
+    const price = live?.price ?? candidate.price ?? 0;
+    setTradeForm((prev) => ({
       ...prev,
-      {
-        ...blankCall(),
-        ticker: candidate.ticker,
-        stockPrice: liveQuotes[normalizeTicker(candidate.ticker)]?.price ?? 0,
-        strike: candidate.strike,
-        dte: candidate.dte,
-        delta: candidate.delta ?? 0,
-        premiumReceived:
-          candidate.mid ??
-          candidate.bid ??
-          candidate.ask ??
-          candidate.last ??
-          0,
-        currentMark:
-          candidate.mid ??
-          candidate.bid ??
-          candidate.ask ??
-          candidate.last ??
-          0,
-        notes: `Finnhub candidate ${candidate.expiration}; verify bid/ask in brokerage before trade.`,
-      },
-    ]);
-    setActiveTab("coveredCalls");
+      date: todayIso(),
+      type: "buy_stock",
+      ticker,
+      price: price > 0 ? String(roundNumber(price, 2)) : "",
+      shares: "",
+      amount: "",
+      notes: `Initial TITAN buy candidate: ${candidate.name}`,
+    }));
+    setActiveTab("tradeLog");
   }
 
-  function addCandidateToHoldings(candidate: BenchCandidate) {
-    const alreadyOwned = holdings.some(
-      (h) => h.ticker.toUpperCase() === candidate.ticker.toUpperCase(),
-    );
-    if (alreadyOwned) return;
-    setHoldings((prev) => [
-      ...prev,
+  function addTrade() {
+    const ticker = normalizeTicker(tradeForm.ticker);
+    const shares = parseNumber(tradeForm.shares);
+    const price = parseNumber(tradeForm.price);
+    const typedAmount = parseNumber(tradeForm.amount);
+    const amount = typedAmount > 0 ? typedAmount : shares > 0 && price > 0 ? shares * price : 0;
+    if (["buy_stock", "sell_stock", "dividend"].includes(tradeForm.type) && !ticker) {
+      window.alert("Ticker is required for stock trades and ticker-level dividends.");
+      return;
+    }
+    if (["buy_stock", "sell_stock"].includes(tradeForm.type) && (shares <= 0 || price <= 0)) {
+      window.alert("Shares and price are required for stock trades.");
+      return;
+    }
+    if (!["buy_stock", "sell_stock"].includes(tradeForm.type) && amount <= 0) {
+      window.alert("Amount is required for cash, dividend, fee, and interest entries.");
+      return;
+    }
+    setTrades((prev) => [
       {
         id: crypto.randomUUID(),
-        ticker: candidate.ticker,
-        name: candidate.name,
-        sleeve: candidate.sleeveFit,
-        sector: candidate.sector,
-        shares: 0,
-        cost: candidate.price,
-        price: candidate.price,
-        titanRank: candidate.rank,
-        signalScore: candidate.signalScore,
-        upside: candidate.upside,
-        revisionScore: candidate.revisionScore,
-        momentumScore: candidate.momentumScore,
-        qualityScore: candidate.qualityScore,
-        dispersion: candidate.dispersion,
-        daysHeld: 0,
-        purchaseDate: new Date().toISOString().slice(0, 10),
-        above200dma: true,
-        earningsBeforeExpiry: false,
-        technicalExtension: 0,
-        buyZoneLow: candidate.buyZoneLow ?? 0,
-        buyZoneHigh: candidate.buyZoneHigh ?? 0,
-        buyAnchor: candidate.buyAnchor ?? 0,
-        stopLevel: candidate.stopLevel ?? 0,
-        trimLow: candidate.trimLow ?? 0,
-        trimHigh: candidate.trimHigh ?? 0,
-        taConfidence: candidate.taConfidence ?? "Manual",
-        taNotes: candidate.taNotes ?? "",
-        notes: candidate.notes,
+        createdAt: new Date().toISOString(),
+        date: tradeForm.date || todayIso(),
+        type: tradeForm.type,
+        ticker,
+        amount: roundNumber(amount, 2),
+        shares: roundNumber(shares, 4),
+        price: roundNumber(price, 4),
+        notes: tradeForm.notes.trim(),
       },
+      ...prev,
     ]);
-    setActiveTab("holdings");
+    setTradeForm({ ...DEFAULT_TRADE_FORM, date: todayIso() });
   }
 
-  function clearHoldings() {
-    if (window.confirm("Clear all TITAN holdings from this browser?")) {
-      setHoldings([]);
+  function deleteTrade(id: string) {
+    setTrades((prev) => prev.filter((trade) => trade.id !== id));
+  }
+
+  function clearTrades() {
+    if (window.confirm("Clear all TITAN trade-log entries from this browser? Holdings generated from trades will also clear.")) {
+      setTrades([]);
     }
   }
 
@@ -1712,6 +1877,16 @@ export default function TitanDashboard() {
       .sort((a, b) => b.combinedScore - a.combinedScore || a.s.rank - b.s.rank);
   }, [benchCandidates, holdings, incomeData, liveQuotes, technicalData]);
 
+  const tradeStats = useMemo(() => buildTradeStats(trades), [trades]);
+
+  const ledgerCash = cash + tradeStats.cashImpact;
+  const ledgerNetLiquidationValue = snapshot.longMarketValue + ledgerCash - marginDebt;
+  const ledgerNetContributions = tradeStats.deposits - tradeStats.withdrawals;
+  const ledgerTotalPnl =
+    ledgerNetLiquidationValue + tradeStats.withdrawals - tradeStats.deposits;
+  const ledgerTotalReturn =
+    ledgerNetContributions > 0 ? ledgerTotalPnl / ledgerNetContributions : 0;
+
   const forwardPerformance = useMemo(() => {
     const estimatedAnnualIncome = holdings.reduce((sum, h) => {
       const ticker = normalizeTicker(h.ticker);
@@ -1721,11 +1896,11 @@ export default function TitanDashboard() {
       return sum + h.shares * price * yieldRate;
     }, 0);
     const financingCost = marginDebt * (marginRate / 100);
-    const netIncome = estimatedAnnualIncome - financingCost;
+    const netIncome = estimatedAnnualIncome + tradeStats.dividends - financingCost - tradeStats.interestExpense - tradeStats.fees;
     const totalReturn = snapshot.totalCost > 0 ? snapshot.totalPnl / snapshot.totalCost : 0;
     const currentYield = snapshot.longMarketValue > 0 ? estimatedAnnualIncome / snapshot.longMarketValue : 0;
     return { estimatedAnnualIncome, financingCost, netIncome, totalReturn, currentYield };
-  }, [benchCandidates, holdings, incomeData, liveQuotes, marginDebt, marginRate, snapshot.longMarketValue, snapshot.totalCost, snapshot.totalPnl]);
+  }, [benchCandidates, holdings, incomeData, liveQuotes, marginDebt, marginRate, snapshot.longMarketValue, snapshot.totalCost, snapshot.totalPnl, tradeStats.dividends, tradeStats.fees, tradeStats.interestExpense]);
 
   return (
     <main className="min-h-screen bg-[#EEF1F6] text-[#0D1B2A]">
@@ -1869,7 +2044,7 @@ export default function TitanDashboard() {
                 TITAN Income Strategy Dashboard
               </h2>
               <p className="mt-5 max-w-4xl text-base leading-8 text-[#0D1B2A]">
-                Multi-asset income dashboard for the TITAN strategy using PHR regime classification, dynamic margin, defensive rotation, income-sleeve monitoring, candidate bench management, and optional call-overlay management.
+                Multi-asset income dashboard for the TITAN strategy using PHR regime classification, dynamic margin, defensive rotation, income-sleeve monitoring, candidate bench management, trade-log holdings, and forward P&L management.
               </p>
             </div>
             <div className="flex items-center justify-end">
@@ -2071,7 +2246,7 @@ export default function TitanDashboard() {
                 <h3 className="text-xl font-black">Immediate commentary</h3>
                 <p className="mt-2 text-sm leading-6 text-[#344054]">
                   The dashboard reviews regime, leverage, holdings, bench
-                  candidates, rankings, sector caps, tax/location data, optional-call
+                  candidates, rankings, sector caps, tax/location data, trade-log
                   status, and cash needs each session, then outputs one primary
                   action state.
                 </p>
@@ -2101,7 +2276,7 @@ export default function TitanDashboard() {
               <h3 className="text-xl font-black">Action Items</h3>
               <p className="mt-2 text-sm text-[#344054]">
                 Rule-engine output based on regime, leverage, holdings, signal
-                ranks, tax lots, and optional overlay status.
+                ranks, tax lots, trade log, and forward performance status.
               </p>
               <div className="mt-4 grid gap-3">
                 {actionItems.map((item, i) => (
@@ -2132,37 +2307,23 @@ export default function TitanDashboard() {
             <section>
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-xl font-black">
-                    Holdings Ledger
-                  </h3>
+                  <h3 className="text-xl font-black">Holdings Ledger</h3>
                   <p className="mt-2 text-sm text-[#344054]">
-                    Streamlined decision view. Editable inputs remain on the left; calculated outputs are locked: live price, buy zone, trim zone, combined 0–100 score, and action state.
+                    Holdings are generated from the Trade Log. Add buy and sell entries on the Trade Log tab; this ledger then calculates open shares, average cost, purchase date, live value, weight, P&amp;L, score, and action state.
                   </p>
                 </div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setHoldings((prev) => [...prev, blankHolding()])
-                    }
-                    className="bg-[#C9A84C] px-4 py-2 text-sm font-black text-white"
-                  >
-                    Add Holding
-                  </button>
-                  <button
-                    type="button"
-                    onClick={clearHoldings}
-                    className="border border-[#E5D8A8] px-4 py-2 text-sm font-black text-[#0D1B2A]"
-                  >
-                    Clear
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("tradeLog")}
+                  className="bg-[#C9A84C] px-4 py-2 text-sm font-black text-white"
+                >
+                  Add Trade
+                </button>
               </div>
-              {holdings.length === 0 ? (
+
+              {snapshot.enrichedHoldings.length === 0 ? (
                 <div className="mt-4 border border-[#E5D8A8] bg-[#F0EBD8] p-4 text-sm text-[#344054]">
-                  No holdings entered yet. Go to the <strong>Bench</strong> tab
-                  and click <strong>Promote</strong> next to a candidate, or use{" "}
-                  <strong>Add Holding</strong> above.
+                  No live holdings yet. Add a <strong>Buy Stock</strong> trade in the Trade Log to create the first TITAN holding.
                 </div>
               ) : (
                 <div className="mt-4 overflow-x-auto">
@@ -2175,7 +2336,7 @@ export default function TitanDashboard() {
                           "Sleeve",
                           "Sector",
                           "Shares",
-                          "Cost",
+                          "Avg Cost",
                           "Date Purchased",
                           "Price",
                           "Buy Zone",
@@ -2184,12 +2345,8 @@ export default function TitanDashboard() {
                           "Weight",
                           "P&L",
                           "Action",
-                          "",
                         ].map((h) => (
-                          <th
-                            key={h}
-                            className="p-3 text-left text-xs uppercase tracking-wide"
-                          >
+                          <th key={h} className="p-3 text-left text-xs uppercase tracking-wide">
                             {h}
                           </th>
                         ))}
@@ -2198,13 +2355,7 @@ export default function TitanDashboard() {
                     <tbody>
                       {snapshot.enrichedHoldings.map((h) => {
                         const ticker = normalizeTicker(h.ticker);
-                        const live = liveQuotes[ticker];
                         const ta = technicalData[ticker];
-                        const holdingBenchMatch =
-                          benchCandidates.find((b) => normalizeTicker(b.ticker) === ticker) ??
-                          DEFAULT_BENCH.find((b) => normalizeTicker(b.ticker) === ticker);
-                        const holdingSleeve = holdingBenchMatch?.sleeveFit ?? h.sleeve;
-                        const holdingSector = holdingBenchMatch?.sector ?? h.sector;
                         const displayTa = displayTaFields(h, ta);
                         const inBuyZone =
                           displayTa.price > 0 &&
@@ -2228,174 +2379,28 @@ export default function TitanDashboard() {
                           above200dma: ta?.above200dma ?? h.above200dma,
                           technicalExtension: ta?.technicalExtension ?? h.technicalExtension,
                         });
+                        const pnl = h.marketValue - h.shares * h.cost;
                         return (
                           <tr key={h.id} className="border-b border-[#E5D8A8] align-top">
+                            <td className="p-2 font-black">{h.ticker}</td>
                             <td className="p-2">
-                              <input
-                                className="w-24 border border-[#E5D8A8] p-2 font-black"
-                                value={h.ticker}
-                                onChange={(e) =>
-                                  updateHoldingTicker(h.id, e.target.value)
-                                }
-                              />
+                              <div className="font-bold">{h.name}</div>
+                              <div className="text-[10px] text-[#667085]">Trade-log derived</div>
                             </td>
+                            <td className="p-2">{valueBox(h.sleeve, undefined, "neutral")}</td>
+                            <td className="p-2">{valueBox(h.sector, undefined, "neutral")}</td>
+                            <td className="p-2 font-bold">{h.shares.toLocaleString()}</td>
+                            <td className="p-2">{formatCurrencyTable(h.cost)}</td>
                             <td className="p-2">
-                              <input
-                                className="w-40 border border-[#E5D8A8] p-2"
-                                value={h.name}
-                                onChange={(e) =>
-                                  updateHolding(h.id, "name", e.target.value)
-                                }
-                              />
+                              {valueBox(h.purchaseDate || "—", h.ltcg ? "LTCG" : `${h.daysHeld} days`, h.ltcg ? "positive" : "warning")}
                             </td>
-                            <td className="p-2">
-                              <select
-                                className="w-40 border border-[#E5D8A8] p-2"
-                                value={h.sleeve}
-                                onChange={(e) =>
-                                  updateHolding(
-                                    h.id,
-                                    "sleeve",
-                                    e.target.value as Sleeve,
-                                  )
-                                }
-                              >
-                                <option>Infrastructure</option>
-                                <option>BDC / Private Credit</option>
-                                <option>Option-Income</option>
-                                <option>Credit / CEF</option>
-                                <option>Tactical</option>
-                              </select>
-                            </td>
-                            <td className="p-2">
-                              <input
-                                className="w-32 border border-[#E5D8A8] p-2"
-                                value={h.sector}
-                                onChange={(e) =>
-                                  updateHolding(h.id, "sector", e.target.value)
-                                }
-                              />
-                            </td>
-                            <td className="p-2">
-                              <input
-                                className="w-20 border border-[#E5D8A8] p-2"
-                                type="number"
-                                value={h.shares}
-                                onChange={(e) =>
-                                  updateHolding(
-                                    h.id,
-                                    "shares",
-                                    parseNumber(e.target.value),
-                                  )
-                                }
-                              />
-                            </td>
-                            <td className="p-2">
-                              <input
-                                className="w-20 border border-[#E5D8A8] p-2"
-                                type="number"
-                                value={h.cost}
-                                onChange={(e) =>
-                                  updateHolding(
-                                    h.id,
-                                    "cost",
-                                    parseNumber(e.target.value),
-                                  )
-                                }
-                              />
-                            </td>
-                            <td className="p-2">
-                              <input
-                                className="w-16 border border-[#E5D8A8] p-2"
-                                type="number"
-                                value={h.daysHeld}
-                                onChange={(e) =>
-                                  updateHolding(
-                                    h.id,
-                                    "daysHeld",
-                                    parseNumber(e.target.value),
-                                  )
-                                }
-                              />
-                              {h.ltcg ? (
-                                <div className="text-xs font-bold text-[#067647]">LTCG</div>
-                              ) : (
-                                <div className="text-xs font-bold text-[#B42318]">ST</div>
-                              )}
-                            </td>
-                            <td className="p-3 text-center">
-                              <input
-                                type="checkbox"
-                                checked={h.earningsBeforeExpiry}
-                                onChange={(e) =>
-                                  updateHolding(
-                                    h.id,
-                                    "earningsBeforeExpiry",
-                                    e.target.checked,
-                                  )
-                                }
-                              />
-                            </td>
-                            <td className="p-2">
-                              {valueBox(
-                                formatCurrencyTable(displayTa.price || h.price),
-                                live
-                                  ? `LIVE ${formatSignedPercentPoints(live.changePercent)}`
-                                  : "STORED",
-                                live ? "positive" : "neutral",
-                              )}
-                            </td>
-                            <td className="p-2">
-                              {zoneBox(
-                                displayTa.buyZoneLow,
-                                displayTa.buyZoneHigh,
-                                inBuyZone ? "IN ZONE" : undefined,
-                                inBuyZone ? "positive" : "neutral",
-                              )}
-                            </td>
-                            <td className="p-2">
-                              {zoneBox(
-                                displayTa.trimLow,
-                                displayTa.trimHigh,
-                                inTrimZone ? "TRIM / REDUCE" : undefined,
-                                inTrimZone ? "warning" : "neutral",
-                              )}
-                            </td>
-                            <td className="p-2">
-                              {valueBox(
-                                formatMetric(combinedScore),
-                                scoreLabel(combinedScore),
-                                scoreTone(combinedScore),
-                              )}
-                            </td>
-                            <td className="p-3 font-bold">
-                              {formatPercent(h.weight)}
-                            </td>
-                            <td
-                              className={`p-3 font-bold ${h.gain >= 0 ? "text-[#067647]" : "text-[#B42318]"}`}
-                            >
-                              {formatPercent(h.gain)}
-                            </td>
-                            <td className="p-3">
-                              <span
-                                className={`border px-2 py-1 text-xs font-black ${statusPill(h.action)}`}
-                              >
-                                {h.action}
-                              </span>
-                            </td>
-                            <td className="p-2">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setHoldings((prev) =>
-                                    prev.filter((x) => x.id !== h.id),
-                                  )
-                                }
-                                className="text-xs font-black text-[#B42318]"
-                              >
-                                Delete
-                              </button>
-                            </td>
+                            <td className="p-2">{valueBox(formatCurrencyTable(displayTa.price || h.price), undefined, "positive")}</td>
+                            <td className="p-2">{zoneBox(displayTa.buyZoneLow, displayTa.buyZoneHigh, inBuyZone ? "IN ZONE" : undefined, inBuyZone ? "positive" : "neutral")}</td>
+                            <td className="p-2">{zoneBox(displayTa.trimLow, displayTa.trimHigh, inTrimZone ? "TRIM / REDUCE" : undefined, inTrimZone ? "warning" : "neutral")}</td>
+                            <td className="p-2">{valueBox(formatMetric(combinedScore), scoreLabel(combinedScore), scoreTone(combinedScore))}</td>
+                            <td className="p-2">{formatPercent(h.weight)}</td>
+                            <td className={`p-2 font-black ${pnl >= 0 ? "text-[#067647]" : "text-[#B42318]"}`}>{formatSignedCurrency(pnl)}</td>
+                            <td className="p-2"><span className={`border px-2 py-1 text-xs font-black ${statusPill(h.action)}`}>{h.action}</span></td>
                           </tr>
                         );
                       })}
@@ -2403,6 +2408,118 @@ export default function TitanDashboard() {
                   </table>
                 </div>
               )}
+            </section>
+          )}
+
+          {activeTab === "tradeLog" && (
+            <section>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-xl font-black">Trade Log</h3>
+                  <p className="mt-2 text-sm text-[#344054]">
+                    This is now the source of truth for TITAN holdings and forward performance. Buy and sell stock trades rebuild the Holdings Ledger automatically. Deposits, withdrawals, dividends, margin interest, and fees feed the Performance tab.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearTrades}
+                  className="border border-[#E5D8A8] px-4 py-2 text-sm font-black text-[#B42318]"
+                >
+                  Clear Log
+                </button>
+              </div>
+
+              <div className="mt-4 grid gap-3 border border-[#E5D8A8] bg-[#F8FAFC] p-4 md:grid-cols-8">
+                <label className="block">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-[#C9A84C]">Date</span>
+                  <input className="mt-1 w-full border border-[#E5D8A8] p-2 text-sm" type="date" value={tradeForm.date} onChange={(e) => setTradeForm((prev) => ({ ...prev, date: e.target.value }))} />
+                </label>
+                <label className="block md:col-span-2">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-[#C9A84C]">Type</span>
+                  <select className="mt-1 w-full border border-[#E5D8A8] p-2 text-sm" value={tradeForm.type} onChange={(e) => setTradeForm((prev) => ({ ...prev, type: e.target.value as TradeType }))}>
+                    <option value="buy_stock">Buy Stock</option>
+                    <option value="sell_stock">Sell Stock</option>
+                    <option value="dividend">Dividend / Distribution</option>
+                    <option value="deposit">Deposit</option>
+                    <option value="withdrawal">Withdrawal</option>
+                    <option value="interest_expense">Margin Interest</option>
+                    <option value="fee">Fee / Expense</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-[#C9A84C]">Ticker</span>
+                  <input className="mt-1 w-full border border-[#E5D8A8] p-2 text-sm font-black uppercase" value={tradeForm.ticker} onChange={(e) => setTradeForm((prev) => ({ ...prev, ticker: e.target.value.toUpperCase() }))} placeholder="EPD" />
+                </label>
+                <label className="block">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-[#C9A84C]">Shares</span>
+                  <input className="mt-1 w-full border border-[#E5D8A8] p-2 text-sm" type="number" value={tradeForm.shares} onChange={(e) => setTradeForm((prev) => ({ ...prev, shares: e.target.value }))} />
+                </label>
+                <label className="block">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-[#C9A84C]">Price</span>
+                  <input className="mt-1 w-full border border-[#E5D8A8] p-2 text-sm" type="number" value={tradeForm.price} onChange={(e) => setTradeForm((prev) => ({ ...prev, price: e.target.value }))} />
+                </label>
+                <label className="block">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-[#C9A84C]">Amount</span>
+                  <input className="mt-1 w-full border border-[#E5D8A8] p-2 text-sm" type="number" value={tradeForm.amount} onChange={(e) => setTradeForm((prev) => ({ ...prev, amount: e.target.value }))} placeholder="auto if sh × px" />
+                </label>
+                <div className="flex items-end">
+                  <button type="button" onClick={addTrade} className="w-full bg-[#C9A84C] px-4 py-2 text-sm font-black text-white">
+                    Add Entry
+                  </button>
+                </div>
+                <label className="block md:col-span-8">
+                  <span className="text-[10px] font-black uppercase tracking-widest text-[#C9A84C]">Notes</span>
+                  <input className="mt-1 w-full border border-[#E5D8A8] p-2 text-sm" value={tradeForm.notes} onChange={(e) => setTradeForm((prev) => ({ ...prev, notes: e.target.value }))} placeholder="Optional rationale, account, lot note, or allocation comment" />
+                </label>
+              </div>
+
+              <div className="mt-5 grid gap-3 md:grid-cols-4">
+                {metricCard("Deposits", formatCurrency(tradeStats.deposits), "capital added")}
+                {metricCard("Withdrawals", formatCurrency(tradeStats.withdrawals), "capital removed")}
+                {metricCard("Dividends", formatCurrency(tradeStats.dividends), "cash distributions logged")}
+                {metricCard("Realized P&L", formatSignedCurrency(tradeStats.realizedStockPnl), "from sell trades", tradeStats.realizedStockPnl >= 0 ? "text-[#067647]" : "text-[#B42318]")}
+              </div>
+
+              <div className="mt-5 overflow-x-auto">
+                <table className="compact-data-table w-full border-collapse">
+                  <thead className="bg-[#0D1B2A] text-white">
+                    <tr>
+                      {["Date", "Type", "Ticker", "Shares", "Price", "Amount", "Notes", ""].map((h) => (
+                        <th key={h} className="p-3 text-left text-xs uppercase tracking-wide">{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {trades.length === 0 ? (
+                      <tr>
+                        <td colSpan={8} className="p-4 text-sm text-[#344054]">
+                          No trades logged yet. Add a buy trade to create the first holding.
+                        </td>
+                      </tr>
+                    ) : (
+                      trades
+                        .slice()
+                        .sort((a, b) => b.date.localeCompare(a.date) || b.createdAt.localeCompare(a.createdAt))
+                        .map((trade) => (
+                          <tr key={trade.id} className="border-b border-[#E5D8A8]">
+                            <td className="p-2 font-bold">{trade.date}</td>
+                            <td className="p-2">{trade.type.replaceAll("_", " ").toUpperCase()}</td>
+                            <td className="p-2 font-black">{trade.ticker || "—"}</td>
+                            <td className="p-2">{trade.shares ? trade.shares.toLocaleString() : "—"}</td>
+                            <td className="p-2">{trade.price ? formatCurrencyTable(trade.price) : "—"}</td>
+                            <td className="p-2 font-bold">{formatCurrency(tradeDollarAmount(trade))}</td>
+                            <td className="p-2 text-xs text-[#344054]">{trade.notes || "—"}</td>
+                            <td className="p-2">
+                              <button type="button" onClick={() => deleteTrade(trade.id)} className="text-xs font-black text-[#B42318]">
+                                Delete
+                              </button>
+                            </td>
+                          </tr>
+                        ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </section>
           )}
 
@@ -2534,10 +2651,10 @@ export default function TitanDashboard() {
                               <button
                                 type="button"
                                 disabled={owned || !s.ticker || role === "Sleeve Benchmark" || role === "Tactical"}
-                                onClick={() => addCandidateToHoldings(s)}
+                                onClick={() => prefillTradeFromCandidate(s)}
                                 className={`px-3 py-2 text-xs font-black ${owned || !s.ticker || role === "Sleeve Benchmark" || role === "Tactical" ? "bg-slate-100 text-slate-400" : "bg-[#C9A84C] text-white"}`}
                               >
-                                {owned ? "Added" : "Promote"}
+                                {owned ? "Owned" : "Log Buy"}
                               </button>
                               <button
                                 type="button"
@@ -2681,350 +2798,41 @@ export default function TitanDashboard() {
             </section>
           )}
 
-          {activeTab === "coveredCalls" && (
-            <section>
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="text-xl font-black">Covered Call Overlay</h3>
-                  <p className="mt-2 text-sm text-[#344054]">
-                    Optional overlay only. TITAN's base rulebook does not require covered calls. Use only on overweight, technically extended positions when assignment would be acceptable or risk-reducing.
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setOpenCalls((prev) => [...prev, blankCall()])}
-                  className="bg-[#C9A84C] px-4 py-2 text-sm font-black text-white"
-                >
-                  Add Call
-                </button>
-              </div>
-
-              <div className="mt-5 border border-[#E5D8A8] bg-[#F0EBD8] p-4">
-                <h4 className="font-black text-[#0D1B2A]">
-                  Finnhub Sell-Call Candidates
-                </h4>
-                <p className="mt-2 text-sm leading-6 text-[#344054]">
-                  Screen: holding must satisfy TITAN cover eligibility, then the
-                  app looks for calls roughly 20–35 DTE, 10–15% OTM, and near
-                  0.10–0.20 delta when delta is available. Free option-chain
-                  data can be stale; use this as a daily alert, not a trade
-                  ticket.
-                </p>
-                <div className="mt-4 overflow-x-auto">
-                  <table className="w-full min-w-[1050px] border-collapse text-sm">
-                    <thead className="bg-[#0D1B2A] text-white">
-                      <tr>
-                        {[
-                          "Ticker",
-                          "Expiration",
-                          "Strike",
-                          "DTE",
-                          "Delta",
-                          "Bid",
-                          "Ask",
-                          "Mid",
-                          "OI",
-                          "Volume",
-                          "Note",
-                          "",
-                        ].map((h) => (
-                          <th
-                            key={h}
-                            className="p-3 text-left text-xs uppercase tracking-wide"
-                          >
-                            {h}
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {snapshot.enrichedHoldings
-                        .filter((h) => h.coverEligible)
-                        .flatMap(
-                          (h) =>
-                            optionCandidates[normalizeTicker(h.ticker)] ?? [],
-                        ).length === 0 ? (
-                        <tr>
-                          <td
-                            colSpan={12}
-                            className="p-4 text-sm text-[#344054]"
-                          >
-                            No Finnhub option candidates loaded. Click Refresh
-                            Live Data after holdings are entered and cover
-                            eligibility is satisfied.
-                          </td>
-                        </tr>
-                      ) : (
-                        snapshot.enrichedHoldings
-                          .filter((h) => h.coverEligible)
-                          .flatMap(
-                            (h) =>
-                              optionCandidates[normalizeTicker(h.ticker)] ?? [],
-                          )
-                          .map((o, idx) => (
-                            <tr
-                              key={`${o.ticker}-${o.expiration}-${o.strike}-${idx}`}
-                              className="border-b border-[#E5D8A8]"
-                            >
-                              <td className="p-3 font-black">{o.ticker}</td>
-                              <td className="p-3">{o.expiration}</td>
-                              <td className="p-3">
-                                {formatCurrency(o.strike)}
-                              </td>
-                              <td className="p-3">{o.dte}</td>
-                              <td className="p-3">
-                                {o.delta === null ? "—" : o.delta.toFixed(2)}
-                              </td>
-                              <td className="p-3">
-                                {o.bid === null ? "—" : formatCurrency(o.bid)}
-                              </td>
-                              <td className="p-3">
-                                {o.ask === null ? "—" : formatCurrency(o.ask)}
-                              </td>
-                              <td className="p-3 font-bold">
-                                {o.mid === null ? "—" : formatCurrency(o.mid)}
-                              </td>
-                              <td className="p-3">{o.openInterest ?? "—"}</td>
-                              <td className="p-3">{o.volume ?? "—"}</td>
-                              <td className="p-3 text-xs text-[#344054]">
-                                {o.note}
-                              </td>
-                              <td className="p-3">
-                                <button
-                                  type="button"
-                                  onClick={() => addOptionCandidateToCalls(o)}
-                                  className="bg-[#C9A84C] px-3 py-2 text-xs font-black text-white"
-                                >
-                                  Use
-                                </button>
-                              </td>
-                            </tr>
-                          ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              <h4 className="mt-6 font-black text-[#0D1B2A]">
-                Open / Manual Covered Calls
-              </h4>
-              <div className="mt-4 overflow-x-auto">
-                <table className="w-full min-w-[1000px] border-collapse text-sm">
-                  <thead className="bg-[#0D1B2A] text-white">
-                    <tr>
-                      {[
-                        "Ticker",
-                        "Shares",
-                        "Stock",
-                        "Strike",
-                        "DTE",
-                        "Delta",
-                        "Premium",
-                        "Mark",
-                        "Capture",
-                        "Earnings",
-                        "Status",
-                        "",
-                      ].map((h) => (
-                        <th
-                          key={h}
-                          className="p-3 text-left text-xs uppercase tracking-wide"
-                        >
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {snapshot.callAlerts.length === 0 ? (
-                      <tr>
-                        <td colSpan={12} className="p-4 text-sm text-[#344054]">
-                          No covered calls open.
-                        </td>
-                      </tr>
-                    ) : (
-                      snapshot.callAlerts.map((c) => (
-                        <tr key={c.id} className="border-b border-[#E5D8A8]">
-                          <td className="p-2">
-                            <input
-                              className="w-24 border border-[#E5D8A8] p-2 font-black"
-                              value={c.ticker}
-                              onChange={(e) =>
-                                updateCall(
-                                  c.id,
-                                  "ticker",
-                                  e.target.value.toUpperCase(),
-                                )
-                              }
-                            />
-                          </td>
-                          <td className="p-2">
-                            <input
-                              className="w-24 border border-[#E5D8A8] p-2"
-                              type="number"
-                              value={c.sharesCovered}
-                              onChange={(e) =>
-                                updateCall(
-                                  c.id,
-                                  "sharesCovered",
-                                  parseNumber(e.target.value),
-                                )
-                              }
-                            />
-                          </td>
-                          <td className="p-2">
-                            <input
-                              className="w-24 border border-[#E5D8A8] p-2"
-                              type="number"
-                              value={c.stockPrice}
-                              onChange={(e) =>
-                                updateCall(
-                                  c.id,
-                                  "stockPrice",
-                                  parseNumber(e.target.value),
-                                )
-                              }
-                            />
-                          </td>
-                          <td className="p-2">
-                            <input
-                              className="w-24 border border-[#E5D8A8] p-2"
-                              type="number"
-                              value={c.strike}
-                              onChange={(e) =>
-                                updateCall(
-                                  c.id,
-                                  "strike",
-                                  parseNumber(e.target.value),
-                                )
-                              }
-                            />
-                          </td>
-                          <td className="p-2">
-                            <input
-                              className="w-20 border border-[#E5D8A8] p-2"
-                              type="number"
-                              value={c.dte}
-                              onChange={(e) =>
-                                updateCall(
-                                  c.id,
-                                  "dte",
-                                  parseNumber(e.target.value),
-                                )
-                              }
-                            />
-                          </td>
-                          <td className="p-2">
-                            <input
-                              className="w-20 border border-[#E5D8A8] p-2"
-                              type="number"
-                              step="0.01"
-                              value={c.delta}
-                              onChange={(e) =>
-                                updateCall(
-                                  c.id,
-                                  "delta",
-                                  parseNumber(e.target.value),
-                                )
-                              }
-                            />
-                          </td>
-                          <td className="p-2">
-                            <input
-                              className="w-24 border border-[#E5D8A8] p-2"
-                              type="number"
-                              value={c.premiumReceived}
-                              onChange={(e) =>
-                                updateCall(
-                                  c.id,
-                                  "premiumReceived",
-                                  parseNumber(e.target.value),
-                                )
-                              }
-                            />
-                          </td>
-                          <td className="p-2">
-                            <input
-                              className="w-24 border border-[#E5D8A8] p-2"
-                              type="number"
-                              value={c.currentMark}
-                              onChange={(e) =>
-                                updateCall(
-                                  c.id,
-                                  "currentMark",
-                                  parseNumber(e.target.value),
-                                )
-                              }
-                            />
-                          </td>
-                          <td className="p-3">{formatPercent(c.capture)}</td>
-                          <td className="p-3">
-                            <input
-                              type="checkbox"
-                              checked={c.earningsBeforeExpiry}
-                              onChange={(e) =>
-                                updateCall(
-                                  c.id,
-                                  "earningsBeforeExpiry",
-                                  e.target.checked,
-                                )
-                              }
-                            />
-                          </td>
-                          <td className="p-3">
-                            <span
-                              className={`border px-2 py-1 text-xs font-black ${statusPill(c.buyback ? "BUY BACK" : "HOLD")}`}
-                            >
-                              {c.buyback ? "BUY BACK" : "HOLD"}
-                            </span>
-                          </td>
-                          <td className="p-2">
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setOpenCalls((prev) =>
-                                  prev.filter((x) => x.id !== c.id),
-                                )
-                              }
-                              className="text-xs font-black text-[#B42318]"
-                            >
-                              Delete
-                            </button>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          )}
-
           {activeTab === "performance" && (
             <section>
               <h3 className="text-xl font-black">Performance</h3>
               <p className="mt-2 text-sm text-[#344054]">
-                Backtest metrics remain as reference only. The top section below is the live forward ledger from current holdings and will update as shares, costs, prices, margin, and yield inputs change.
+                Forward performance is now tied to the Trade Log. Deposits, withdrawals, buys, sells, dividends, margin interest, and fees feed the live P&amp;L view. Backtest metrics remain reference-only and are shown at the bottom.
               </p>
 
-              <h4 className="mt-5 font-black text-[#0D1B2A]">Live Forward P&L</h4>
+              <h4 className="mt-5 font-black text-[#0D1B2A]">Live Ledger Performance</h4>
               <div className="mt-3 grid gap-3 md:grid-cols-4">
-                {metricCard("Market Value", formatCurrency(snapshot.longMarketValue), "current holdings value")}
-                {metricCard("Cost Basis", formatCurrency(snapshot.totalCost), "entered cost basis")}
-                {metricCard("Unrealized P&L", formatSignedCurrency(snapshot.totalPnl), formatPercent(forwardPerformance.totalReturn))}
+                {metricCard("Market Value", formatCurrency(snapshot.longMarketValue), "open holdings")}
+                {metricCard("Ledger Cash", formatCurrency(ledgerCash), "manual cash + trade cash flow")}
+                {metricCard("Net Liq", formatCurrency(ledgerNetLiquidationValue), "market value + cash - margin")}
+                {metricCard("Net Contributions", formatCurrency(ledgerNetContributions), "deposits less withdrawals")}
+                {metricCard("Total P&L", formatSignedCurrency(ledgerTotalPnl), formatPercent(ledgerTotalReturn), ledgerTotalPnl >= 0 ? "text-[#067647]" : "text-[#B42318]")}
+                {metricCard("Unrealized P&L", formatSignedCurrency(snapshot.totalPnl), formatPercent(forwardPerformance.totalReturn), snapshot.totalPnl >= 0 ? "text-[#067647]" : "text-[#B42318]")}
+                {metricCard("Realized P&L", formatSignedCurrency(tradeStats.realizedStockPnl), "sell trades", tradeStats.realizedStockPnl >= 0 ? "text-[#067647]" : "text-[#B42318]")}
+                {metricCard("Dividends", formatCurrency(tradeStats.dividends), "logged distributions")}
                 {metricCard("Current Yield", formatPercent(forwardPerformance.currentYield), "gross annualized yield estimate")}
-                {metricCard("Gross Income", formatCurrency(forwardPerformance.estimatedAnnualIncome), "annualized before financing")}
-                {metricCard("Margin Cost", formatCurrency(forwardPerformance.financingCost), "annualized interest drag")}
-                {metricCard("Net Income", formatCurrency(forwardPerformance.netIncome), "gross income less margin cost")}
-                {metricCard("Net Liq", formatCurrency(snapshot.netLiquidationValue), "market value + cash - margin")}
+                {metricCard("Gross Income", formatCurrency(forwardPerformance.estimatedAnnualIncome), "annualized forward income")}
+                {metricCard("Margin Cost", formatCurrency(forwardPerformance.financingCost + tradeStats.interestExpense), "annualized + logged interest")}
+                {metricCard("Net Income", formatCurrency(forwardPerformance.netIncome), "income less financing/fees")}
+              </div>
+
+              <div className="mt-5 grid gap-3 md:grid-cols-4">
+                {metricCard("Buy Cost", formatCurrency(tradeStats.buyCost), `${tradeStats.stockTradeCount} stock trades`)}
+                {metricCard("Sell Proceeds", formatCurrency(tradeStats.sellProceeds), "cash from sales")}
+                {metricCard("Fees", formatCurrency(tradeStats.fees), "logged expenses")}
+                {metricCard("Cash Impact", formatSignedCurrency(tradeStats.cashImpact), "net trade-log cash flow", tradeStats.cashImpact >= 0 ? "text-[#067647]" : "text-[#B42318]")}
               </div>
 
               <div className="mt-5 overflow-x-auto">
                 <table className="compact-data-table w-full border-collapse">
                   <thead className="bg-[#0D1B2A] text-white">
                     <tr>
-                      {["Ticker", "Shares", "Cost", "Price", "Market Value", "Weight", "P&L", "Return", "Action"].map((h) => (
+                      {["Ticker", "Shares", "Avg Cost", "Price", "Market Value", "Weight", "Unrealized P&L", "Return", "Income", "Action"].map((h) => (
                         <th key={h} className="p-3 text-left text-xs uppercase tracking-wide">{h}</th>
                       ))}
                     </tr>
@@ -3032,31 +2840,35 @@ export default function TitanDashboard() {
                   <tbody>
                     {snapshot.enrichedHoldings.length === 0 ? (
                       <tr>
-                        <td colSpan={9} className="p-4 text-sm text-[#344054]">
-                          No live holdings entered yet. Promote names from Bench and enter shares/cost to start forward performance tracking.
+                        <td colSpan={10} className="p-4 text-sm text-[#344054]">
+                          No live holdings entered yet. Add buy trades in the Trade Log to start forward performance tracking.
                         </td>
                       </tr>
                     ) : (
                       snapshot.enrichedHoldings
                         .slice()
                         .sort((a, b) => b.marketValue - a.marketValue)
-                        .map((h) => (
-                          <tr key={`perf-${h.id}`} className="border-b border-[#E5D8A8]">
-                            <td className="p-2 font-black">{h.ticker}</td>
-                            <td className="p-2">{h.shares.toLocaleString()}</td>
-                            <td className="p-2">{formatCurrencyTable(h.cost)}</td>
-                            <td className="p-2">{formatCurrencyTable(h.price)}</td>
-                            <td className="p-2 font-bold">{formatCurrency(h.marketValue)}</td>
-                            <td className="p-2">{formatPercent(h.weight)}</td>
-                            <td className={`p-2 font-bold ${h.marketValue - h.shares * h.cost >= 0 ? "text-[#067647]" : "text-[#B42318]"}`}>
-                              {formatSignedCurrency(h.marketValue - h.shares * h.cost)}
-                            </td>
-                            <td className={`p-2 font-bold ${h.gain >= 0 ? "text-[#067647]" : "text-[#B42318]"}`}>{formatPercent(h.gain)}</td>
-                            <td className="p-2">
-                              <span className={`border px-2 py-1 text-xs font-black ${statusPill(h.action)}`}>{h.action}</span>
-                            </td>
-                          </tr>
-                        ))
+                        .map((h) => {
+                          const ticker = normalizeTicker(h.ticker);
+                          const benchMatch = benchCandidates.find((b) => normalizeTicker(b.ticker) === ticker);
+                          const yieldRate = incomeData[ticker]?.dividendYield ?? benchMatch?.yieldRate ?? h.upside ?? 0;
+                          const annualIncome = h.marketValue * yieldRate;
+                          const pnl = h.marketValue - h.shares * h.cost;
+                          return (
+                            <tr key={`perf-${h.id}`} className="border-b border-[#E5D8A8]">
+                              <td className="p-2 font-black">{h.ticker}</td>
+                              <td className="p-2">{h.shares.toLocaleString()}</td>
+                              <td className="p-2">{formatCurrencyTable(h.cost)}</td>
+                              <td className="p-2">{formatCurrencyTable(h.price)}</td>
+                              <td className="p-2 font-bold">{formatCurrency(h.marketValue)}</td>
+                              <td className="p-2">{formatPercent(h.weight)}</td>
+                              <td className={`p-2 font-bold ${pnl >= 0 ? "text-[#067647]" : "text-[#B42318]"}`}>{formatSignedCurrency(pnl)}</td>
+                              <td className={`p-2 font-bold ${h.gain >= 0 ? "text-[#067647]" : "text-[#B42318]"}`}>{formatPercent(h.gain)}</td>
+                              <td className="p-2">{formatCurrency(annualIncome)}</td>
+                              <td className="p-2"><span className={`border px-2 py-1 text-xs font-black ${statusPill(h.action)}`}>{h.action}</span></td>
+                            </tr>
+                          );
+                        })
                     )}
                   </tbody>
                 </table>
