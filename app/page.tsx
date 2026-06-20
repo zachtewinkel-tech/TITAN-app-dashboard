@@ -172,6 +172,14 @@ type SignalAutoData = {
   warnings: string[];
 };
 
+type IncomeAutoData = {
+  ticker: string;
+  asOf: string;
+  dividendYield: number | null;
+  dividendYieldSource: string;
+  warnings: string[];
+};
+
 type TechnicalAutoData = {
   ticker: string;
   asOf: string;
@@ -180,6 +188,7 @@ type TechnicalAutoData = {
   sma200: number | null;
   above200dma: boolean | null;
   technicalExtension: number | null;
+  sixMonthReturn: number | null;
   hvn: number | null;
   support: number | null;
   resistance: number | null;
@@ -208,6 +217,7 @@ type MarketApiResponse = {
   };
   options?: Record<string, OptionCandidate[]>;
   signal?: Record<string, SignalAutoData>;
+  income?: Record<string, IncomeAutoData>;
   technical?: Record<string, TechnicalAutoData>;
   warnings?: string[];
 };
@@ -228,7 +238,7 @@ const TAB_LABELS: Record<Tab, string> = {
 
 const STORAGE_KEYS = {
   holdings: "titanIncomeHoldings.v2",
-  bench: "titanIncomeBench.v3",
+  bench: "titanIncomeBench.v4",
   calls: "titanIncomeCoveredCalls.v2",
   settings: "titanIncomeSettings.v2",
   liveSettings: "titanIncomeLiveSettings.v2",
@@ -766,6 +776,32 @@ function displayTaFields(
   };
 }
 
+const TITAN_CURRENT_CORE_TICKERS = new Set([
+  "MPLX", "EPD", "ET", "WMB", "UTG", "ARCC", "MAIN", "HTGC", "GBDC", "CSWC", "XYLD", "DIVO", "PDI", "PTY", "DSL", "BGT", "ECC",
+]);
+
+const TITAN_SLEEVE_BENCHMARK_TICKERS = new Set([
+  "PCEF", "BIZD", "AMLP", "HYG", "JNK", "LQD",
+]);
+
+const TITAN_TACTICAL_TICKERS = new Set([
+  "AGG", "BSV", "SGOV", "MUB", "USFR", "VGIT", "IEF", "MINT", "JPST",
+]);
+
+const TITAN_WATCHLIST_TICKERS = new Set([
+  "FDUS", "TRIN", "RYLD", "BCSF", "CGBD", "ECC",
+]);
+
+function inferBenchRole(tickerInput: string, sleeve: Sleeve): BenchRole {
+  const ticker = normalizeTicker(tickerInput);
+  if (!ticker) return "Challenger";
+  if (TITAN_TACTICAL_TICKERS.has(ticker) || sleeve === "Tactical") return "Tactical";
+  if (TITAN_SLEEVE_BENCHMARK_TICKERS.has(ticker)) return "Sleeve Benchmark";
+  if (TITAN_CURRENT_CORE_TICKERS.has(ticker)) return "Current Core";
+  if (TITAN_WATCHLIST_TICKERS.has(ticker)) return "Watchlist";
+  return "Challenger";
+}
+
 function titanAssetLocation(tickerInput: string, sleeve: Sleeve): { pocket: string; rationale: string } {
   const ticker = normalizeTicker(tickerInput);
   if (["MPLX", "EPD", "ET"].includes(ticker)) {
@@ -916,6 +952,7 @@ export default function TitanDashboard() {
   const [hydrated, setHydrated] = useState(false);
   const [liveQuotes, setLiveQuotes] = useState<Record<string, LiveQuote>>({});
   const [signalData, setSignalData] = useState<Record<string, SignalAutoData>>({});
+  const [incomeData, setIncomeData] = useState<Record<string, IncomeAutoData>>({});
   const [technicalData, setTechnicalData] = useState<Record<string, TechnicalAutoData>>({});
   const [liveLoading, setLiveLoading] = useState(false);
   const [liveError, setLiveError] = useState("");
@@ -935,25 +972,29 @@ export default function TitanDashboard() {
       if (savedHoldings) setHoldings(JSON.parse(savedHoldings) as Holding[]);
       if (savedBench)
         setBenchCandidates(
-          (JSON.parse(savedBench) as Partial<BenchCandidate>[]).map((candidate, index) => ({
-            ...DEFAULT_INCOME_FIELDS,
-            ...DEFAULT_TA_FIELDS,
-            ...candidate,
-            rank: typeof candidate.rank === "number" ? candidate.rank : index + 1,
-            role: (candidate.role as BenchRole) ?? "Challenger",
-            ticker: candidate.ticker ?? "",
-            name: candidate.name ?? "",
-            sleeveFit: (candidate.sleeveFit as Sleeve) ?? "Infrastructure",
-            sector: candidate.sector ?? "",
-            price: candidate.price ?? 0,
-            signalScore: candidate.signalScore ?? 0,
-            upside: candidate.upside ?? candidate.yieldRate ?? 0,
-            revisionScore: candidate.revisionScore ?? 0,
-            momentumScore: candidate.momentumScore ?? 0,
-            qualityScore: candidate.qualityScore ?? 0,
-            dispersion: candidate.dispersion ?? 0,
-            notes: candidate.notes ?? "",
-          })) as BenchCandidate[],
+          (JSON.parse(savedBench) as Partial<BenchCandidate>[]).map((candidate, index) => {
+            const sleeveFit = (candidate.sleeveFit as Sleeve) ?? "Infrastructure";
+            const ticker = candidate.ticker ?? "";
+            return {
+              ...DEFAULT_INCOME_FIELDS,
+              ...DEFAULT_TA_FIELDS,
+              ...candidate,
+              rank: typeof candidate.rank === "number" ? candidate.rank : index + 1,
+              role: inferBenchRole(ticker, sleeveFit),
+              ticker,
+              name: candidate.name ?? "",
+              sleeveFit,
+              sector: candidate.sector ?? "",
+              price: candidate.price ?? 0,
+              signalScore: candidate.signalScore ?? 0,
+              upside: candidate.upside ?? candidate.yieldRate ?? 0,
+              revisionScore: candidate.revisionScore ?? 0,
+              momentumScore: candidate.momentumScore ?? 0,
+              qualityScore: candidate.qualityScore ?? 0,
+              dispersion: candidate.dispersion ?? 0,
+              notes: "",
+            };
+          }) as BenchCandidate[],
         );
       if (savedCalls) setOpenCalls(JSON.parse(savedCalls) as CoveredCall[]);
       if (savedSettings) {
@@ -1064,10 +1105,13 @@ export default function TitanDashboard() {
         ? `&includeOptions=1&optionSymbols=${encodeURIComponent(optionSymbols)}`
         : "";
       const signalQuery = "";
+      const incomeQuery = signalSymbols
+        ? `&includeIncome=1&incomeSymbols=${encodeURIComponent(signalSymbols)}`
+        : "";
       const technicalQuery = signalSymbols
         ? `&includeTechnical=1&technicalSymbols=${encodeURIComponent(signalSymbols)}`
         : "";
-      const endpoint = `/api/titan?symbols=${encodeURIComponent(quoteSymbols)}${optionQuery}${signalQuery}${technicalQuery}`;
+      const endpoint = `/api/titan?symbols=${encodeURIComponent(quoteSymbols)}${optionQuery}${signalQuery}${incomeQuery}${technicalQuery}`;
       const response = await fetch(endpoint, {
         cache: "no-store",
         headers: finnhubApiKey.trim()
@@ -1124,9 +1168,13 @@ export default function TitanDashboard() {
           const ticker = normalizeTicker(b.ticker);
           const q = data.quotes?.[ticker];
           const ta = data.technical?.[ticker];
+          const income = data.income?.[ticker];
           const next = {
             ...b,
             price: q?.price ? Number(q.price.toFixed(2)) : b.price,
+            role: inferBenchRole(b.ticker, b.sleeveFit),
+            yieldRate: income?.dividendYield ?? b.yieldRate,
+            sixMonthReturn: ta?.sixMonthReturn ?? b.sixMonthReturn,
 
             buyZoneLow: ta?.buyZoneLow ?? b.buyZoneLow ?? 0,
             buyZoneHigh: ta?.buyZoneHigh ?? b.buyZoneHigh ?? 0,
@@ -2023,7 +2071,7 @@ export default function TitanDashboard() {
                           <tr key={h.id} className="border-b border-[#E5D8A8] align-top">
                             <td className="p-2">
                               <input
-                                className="w-20 border border-[#E5D8A8] p-2 font-black"
+                                className="w-24 border border-[#E5D8A8] p-2 font-black"
                                 value={h.ticker}
                                 onChange={(e) =>
                                   updateHolding(
@@ -2045,7 +2093,7 @@ export default function TitanDashboard() {
                             </td>
                             <td className="p-2">
                               <select
-                                className="w-28 border border-[#E5D8A8] p-2"
+                                className="w-40 border border-[#E5D8A8] p-2"
                                 value={h.sleeve}
                                 onChange={(e) =>
                                   updateHolding(
@@ -2209,7 +2257,7 @@ export default function TitanDashboard() {
                     Bench / Top Candidate Pool
                   </h3>
                   <p className="mt-2 text-sm text-[#344054]">
-                    Expanded TITAN candidate universe. The first 20 ranks are the current Top 20 shortlist; the full list contains current core holdings, challengers, sleeve benchmarks, tactical instruments, and watchlist names across all TITAN sleeves.
+                    Expanded TITAN candidate universe. The first 20 ranks are the current Top 20 shortlist. Role and tax location are automatically assigned by ticker/sleeve, yield is pulled from live data when available, and discount/NAV, coverage, six-month return, and z-score are internal score inputs rather than separate editable columns.
                   </p>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -2240,16 +2288,11 @@ export default function TitanDashboard() {
                         "Sleeve",
                         "Price",
                         "Yield",
-                        "Disc/NAV",
-                        "Coverage",
-                        "6mo",
-                        "Z",
                         "Buy Zone",
                         "Trim Zone",
                         "Score",
                         "Tax",
                         "Status",
-                        "Notes",
                         "",
                       ].map((h) => (
                         <th
@@ -2266,7 +2309,10 @@ export default function TitanDashboard() {
                       const ticker = normalizeTicker(s.ticker);
                       const owned = ownedTickers.has(ticker);
                       const live = liveQuotes[ticker];
+                      const income = incomeData[ticker];
                       const ta = technicalData[ticker];
+                      const role = inferBenchRole(s.ticker, s.sleeveFit);
+                      const displayYield = income?.dividendYield ?? s.yieldRate;
                       const displayTa = displayTaFields(s, ta);
                       const inBuyZone =
                         displayTa.price > 0 &&
@@ -2280,6 +2326,9 @@ export default function TitanDashboard() {
                         displayTa.price >= displayTa.trimLow;
                       const combinedScore = calculateTitanSignalScore({
                         ...s,
+                        role,
+                        yieldRate: displayYield,
+                        sixMonthReturn: ta?.sixMonthReturn ?? s.sixMonthReturn,
                         price: displayTa.price,
                         buyZoneLow: displayTa.buyZoneLow,
                         buyZoneHigh: displayTa.buyZoneHigh,
@@ -2289,7 +2338,7 @@ export default function TitanDashboard() {
                         taConfidence: displayTa.confidence,
                       });
                       const top20 = Number(s.rank) <= 20;
-                      const tax = s.taxPocket || titanAssetLocation(s.ticker, s.sleeveFit).pocket;
+                      const tax = titanAssetLocation(s.ticker, s.sleeveFit).pocket;
                       return (
                         <tr key={`${s.ticker || "bench"}-${index}`} className="border-b border-[#E5D8A8] align-top">
                           <td className="p-2">
@@ -2304,7 +2353,7 @@ export default function TitanDashboard() {
                           </td>
                           <td className="p-2">
                             <input
-                              className="w-20 border border-[#E5D8A8] p-2 font-black"
+                              className="w-24 border border-[#E5D8A8] p-2 font-black"
                               value={s.ticker}
                               onChange={(e) =>
                                 updateBenchCandidate(index, "ticker", e.target.value.toUpperCase())
@@ -2313,21 +2362,11 @@ export default function TitanDashboard() {
                             <div className="mt-1 text-[10px] font-bold text-[#667085]">{s.name}</div>
                           </td>
                           <td className="p-2">
-                            <select
-                              className="w-28 border border-[#E5D8A8] p-2"
-                              value={s.role}
-                              onChange={(e) => updateBenchCandidate(index, "role", e.target.value as BenchRole)}
-                            >
-                              <option>Current Core</option>
-                              <option>Challenger</option>
-                              <option>Sleeve Benchmark</option>
-                              <option>Tactical</option>
-                              <option>Watchlist</option>
-                            </select>
+                            {valueBox(role, "AUTO", role === "Current Core" || role === "Challenger" ? "positive" : role === "Watchlist" ? "warning" : "neutral")}
                           </td>
                           <td className="p-2">
                             <select
-                              className="w-28 border border-[#E5D8A8] p-2"
+                              className="w-40 border border-[#E5D8A8] p-2"
                               value={s.sleeveFit}
                               onChange={(e) => updateBenchCandidate(index, "sleeveFit", e.target.value as Sleeve)}
                             >
@@ -2347,53 +2386,7 @@ export default function TitanDashboard() {
                             )}
                           </td>
                           <td className="p-2">
-                            <input
-                              className="w-16 border border-[#E5D8A8] p-2"
-                              type="number"
-                              step="0.001"
-                              value={s.yieldRate}
-                              onChange={(e) => updateBenchCandidate(index, "yieldRate", parseNumber(e.target.value))}
-                            />
-                            <div className="mt-1 text-[10px] font-bold text-[#667085]">{formatRatio(s.yieldRate, 1)}</div>
-                          </td>
-                          <td className="p-2">
-                            <input
-                              className="w-16 border border-[#E5D8A8] p-2"
-                              type="number"
-                              step="0.001"
-                              value={s.discountNav}
-                              onChange={(e) => updateBenchCandidate(index, "discountNav", parseNumber(e.target.value))}
-                            />
-                            <div className="mt-1 text-[10px] font-bold text-[#667085]">{formatSignedRatio(s.discountNav, 1)}</div>
-                          </td>
-                          <td className="p-2">
-                            <input
-                              className="w-16 border border-[#E5D8A8] p-2"
-                              type="number"
-                              step="0.01"
-                              value={s.coverage}
-                              onChange={(e) => updateBenchCandidate(index, "coverage", parseNumber(e.target.value))}
-                            />
-                          </td>
-                          <td className="p-2">
-                            <input
-                              className="w-16 border border-[#E5D8A8] p-2"
-                              type="number"
-                              step="0.001"
-                              value={s.sixMonthReturn}
-                              onChange={(e) => updateBenchCandidate(index, "sixMonthReturn", parseNumber(e.target.value))}
-                            />
-                            <div className="mt-1 text-[10px] font-bold text-[#667085]">{formatSignedRatio(s.sixMonthReturn, 1)}</div>
-                          </td>
-                          <td className="p-2">
-                            <input
-                              className="w-14 border border-[#E5D8A8] p-2"
-                              type="number"
-                              step="0.1"
-                              value={s.discountZ}
-                              onChange={(e) => updateBenchCandidate(index, "discountZ", parseNumber(e.target.value))}
-                            />
-                            <div className="mt-1 text-[10px] font-bold text-[#667085]">{formatMetric(s.discountZ, 1)}σ</div>
+                            {valueBox(formatRatio(displayYield, 1), income?.dividendYield ? "LIVE" : "MODEL", income?.dividendYield ? "positive" : "neutral")}
                           </td>
                           <td className="p-2">
                             {zoneBox(displayTa.buyZoneLow, displayTa.buyZoneHigh, inBuyZone ? "IN ZONE" : "AUTO", inBuyZone ? "positive" : "neutral")}
@@ -2405,34 +2398,24 @@ export default function TitanDashboard() {
                             {valueBox(formatMetric(combinedScore), scoreLabel(combinedScore), scoreTone(combinedScore))}
                           </td>
                           <td className="p-2">
-                            <input
-                              className="w-32 border border-[#E5D8A8] p-2 text-[10px]"
-                              value={tax}
-                              onChange={(e) => updateBenchCandidate(index, "taxPocket", e.target.value)}
-                            />
+                            {valueBox(tax, "AUTO", "neutral")}
                           </td>
                           <td className="p-3">
                             <div className="flex flex-col gap-1">
                               <span className={`border px-2 py-1 text-xs font-black ${owned ? statusPill("HOLD") : top20 ? statusPill("BUY") : statusPill("HOLD")}`}>
-                                {owned ? "OWNED" : top20 ? "TOP 20" : s.role.toUpperCase()}
+                                {owned ? "OWNED" : top20 ? "TOP 20" : role.toUpperCase()}
                               </span>
-                              {s.role === "Watchlist" ? <span className="text-[10px] font-bold text-[#B42318]">Watch only</span> : null}
+                              {role === "Watchlist" ? <span className="text-[10px] font-bold text-[#B42318]">Watch only</span> : null}
                             </div>
                           </td>
-                          <td className="p-2">
-                            <textarea
-                              className="h-14 w-64 border border-[#E5D8A8] p-2 text-[10px]"
-                              value={s.notes}
-                              onChange={(e) => updateBenchCandidate(index, "notes", e.target.value)}
-                            />
-                          </td>
+
                           <td className="p-3">
                             <div className="flex flex-col gap-2">
                               <button
                                 type="button"
-                                disabled={owned || !s.ticker || s.role === "Sleeve Benchmark"}
+                                disabled={owned || !s.ticker || role === "Sleeve Benchmark" || role === "Tactical"}
                                 onClick={() => addCandidateToHoldings(s)}
-                                className={`px-3 py-2 text-xs font-black ${owned || !s.ticker || s.role === "Sleeve Benchmark" ? "bg-slate-100 text-slate-400" : "bg-[#C9A84C] text-white"}`}
+                                className={`px-3 py-2 text-xs font-black ${owned || !s.ticker || role === "Sleeve Benchmark" || role === "Tactical" ? "bg-slate-100 text-slate-400" : "bg-[#C9A84C] text-white"}`}
                               >
                                 {owned ? "Added" : "Promote"}
                               </button>

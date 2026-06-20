@@ -96,6 +96,14 @@ type SignalAutoData = {
   warnings: string[];
 };
 
+type IncomeAutoData = {
+  ticker: string;
+  asOf: string;
+  dividendYield: number | null;
+  dividendYieldSource: string;
+  warnings: string[];
+};
+
 type TaConfidence = "Manual" | "Low" | "Medium" | "High";
 
 type TechnicalAutoData = {
@@ -106,6 +114,7 @@ type TechnicalAutoData = {
   sma200: number | null;
   above200dma: boolean | null;
   technicalExtension: number | null;
+  sixMonthReturn: number | null;
   hvn: number | null;
   support: number | null;
   resistance: number | null;
@@ -405,6 +414,46 @@ async function fetchQualityScore(symbol: string, token: string): Promise<{
   };
 }
 
+async function fetchIncomeAutoData(
+  symbol: string,
+  token: string,
+): Promise<IncomeAutoData> {
+  const warnings: string[] = [];
+  const asOf = new Date().toISOString();
+  try {
+    const payload = await fetchFinnhubJson<FinnhubMetric>(
+      `/stock/metric?symbol=${encodeURIComponent(symbol)}&metric=all`,
+      token,
+    );
+    const metric = payload.metric ?? {};
+    const rawYield = firstMetric(metric, [
+      "dividendYieldIndicatedAnnual",
+      "currentDividendYieldTTM",
+      "dividendYield5Y",
+    ]);
+    const normalizedYield =
+      rawYield === null ? null : rawYield > 1 ? rawYield / 100 : rawYield;
+    return {
+      ticker: symbol,
+      asOf,
+      dividendYield: round(normalizedYield, 4),
+      dividendYieldSource: rawYield === null ? "Unavailable" : "Finnhub metric",
+      warnings,
+    };
+  } catch (error) {
+    warnings.push(
+      `income metrics unavailable: ${error instanceof Error ? error.message : "unknown error"}`,
+    );
+    return {
+      ticker: symbol,
+      asOf,
+      dividendYield: null,
+      dividendYieldSource: "Unavailable",
+      warnings,
+    };
+  }
+}
+
 async function fetchSignalAutoData(
   symbol: string,
   token: string,
@@ -653,6 +702,7 @@ function fallbackTechnicalAutoData(
       sma200: null,
       above200dma: null,
       technicalExtension: null,
+      sixMonthReturn: null,
       hvn: null,
       support: null,
       resistance: null,
@@ -686,6 +736,7 @@ function fallbackTechnicalAutoData(
     sma200: null,
     above200dma: null,
     technicalExtension: null,
+    sixMonthReturn: null,
     hvn: null,
     support: round(buyZoneLow),
     resistance: round(trimLow),
@@ -743,6 +794,7 @@ async function fetchTechnicalAutoData(
   const swingHigh = Math.max(...recent.map((x) => x.high));
   const yearHigh = Math.max(...sample.map((x) => x.high));
   const rsi14 = computeRsi(closes, 14);
+  const sixMonthReturn = returnFromCloses(closes, 126);
   const macdState = macdLabel(closes);
   const above200dma = sma200 !== null ? latestPrice > sma200 : null;
   const technicalExtension = sma200 && sma200 > 0 ? latestPrice / sma200 - 1 : null;
@@ -798,6 +850,7 @@ async function fetchTechnicalAutoData(
     sma200: round(sma200),
     above200dma,
     technicalExtension: round(technicalExtension, 4),
+    sixMonthReturn: round(sixMonthReturn, 4),
     hvn: round(hvn),
     support: round(support),
     resistance: round(resistance),
@@ -981,6 +1034,13 @@ export async function GET(request: Request) {
     .split(",")
     .map(normalizeTicker)
     .filter(Boolean);
+  const includeIncome =
+    url.searchParams.get("includeIncome") === "1" ||
+    url.searchParams.get("includeIncome") === "true";
+  const requestedIncomeSymbols = (url.searchParams.get("incomeSymbols") ?? "")
+    .split(",")
+    .map(normalizeTicker)
+    .filter(Boolean);
   const includeTechnical =
     url.searchParams.get("includeTechnical") === "1" ||
     url.searchParams.get("includeTechnical") === "true";
@@ -1108,6 +1168,34 @@ export async function GET(request: Request) {
     );
   }
 
+  const income: Record<string, IncomeAutoData> = {};
+  if (includeIncome && requestedIncomeSymbols.length > 0) {
+    const incomeSymbols = Array.from(new Set(requestedIncomeSymbols)).slice(
+      0,
+      60,
+    );
+    await Promise.all(
+      incomeSymbols.map(async (symbol) => {
+        try {
+          income[symbol] = await fetchIncomeAutoData(symbol, token);
+        } catch (error) {
+          warnings.push(
+            `${symbol} income: ${error instanceof Error ? error.message : "income metrics unavailable"}`,
+          );
+          income[symbol] = {
+            ticker: symbol,
+            asOf,
+            dividendYield: null,
+            dividendYieldSource: "Unavailable",
+            warnings: [
+              error instanceof Error ? error.message : "income metrics unavailable",
+            ],
+          };
+        }
+      }),
+    );
+  }
+
   const technical: Record<string, TechnicalAutoData> = {};
   if (includeTechnical && requestedTechnicalSymbols.length > 0) {
     const technicalSymbols = Array.from(new Set(requestedTechnicalSymbols)).slice(
@@ -1148,6 +1236,7 @@ export async function GET(request: Request) {
     },
     options,
     signal,
+    income,
     technical,
     warnings,
   });
