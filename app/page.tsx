@@ -2326,7 +2326,6 @@ export default function TitanDashboard() {
                         displayTa.price >= displayTa.trimLow;
                       const combinedScore = calculateTitanSignalScore({
                         ...s,
-                        role,
                         yieldRate: displayYield,
                         sixMonthReturn: ta?.sixMonthReturn ?? s.sixMonthReturn,
                         price: displayTa.price,
